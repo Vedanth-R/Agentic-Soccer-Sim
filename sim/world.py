@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from math import hypot
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -10,6 +10,7 @@ from .actions import Action, MoveAction, PassAction
 from .state import BallState, PlayerState, ScenarioStatus, WorldState
 
 Vector = Tuple[float, float]
+InitialStateFactory = Callable[[np.random.Generator, "WorldConfig"], WorldState]
 
 
 @dataclass(frozen=True)
@@ -33,8 +34,13 @@ class WorldConfig:
 class SoccerWorld:
     """Owns state and applies all movement and ball rules."""
 
-    def __init__(self, config: Optional[WorldConfig] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[WorldConfig] = None,
+        initial_state_factory: Optional[InitialStateFactory] = None,
+    ) -> None:
         self.config = config or WorldConfig()
+        self._initial_state_factory = initial_state_factory
         self._rng = np.random.default_rng()
         self.state = self._initial_state()
 
@@ -58,6 +64,8 @@ class SoccerWorld:
         return self.state
 
     def _initial_state(self) -> WorldState:
+        if self._initial_state_factory is not None:
+            return self._initial_state_factory(self._rng, self.config)
         y = self.config.pitch_width / 2.0
         players = {
             1: PlayerState(1, team=0, position=(20.0, y), has_ball=True),
@@ -162,4 +170,3 @@ def _limit_magnitude(vector: Vector, maximum: float) -> Vector:
         return (0.0, 0.0)
     scale = min(magnitude, maximum) / magnitude
     return _scale(vector, scale)
-
