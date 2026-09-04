@@ -7,13 +7,4 @@ name = "pitchlab"
 version = "0.1.0"
 description = "A small, deterministic 2D soccer simulation for learning and tactical experiments."
 requires-python = ">=3.9"
-dependencies = ["numpy>=1.24"]
-
-[project.optional-dependencies]
-dev = ["pytest>=7"]
-viewer = ["pygame>=2.5"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-
+dependencies = ["numpy>=1.24", "pygame>=2.5", "torch>=2.0"]
