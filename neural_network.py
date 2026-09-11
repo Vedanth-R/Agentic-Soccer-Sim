@@ -57,12 +57,20 @@ def load_model(filename="artifacts/swarm.pt"):
     return model.eval()
 
 
-def train(env, total_steps=500_000, seed=4, filename="artifacts/swarm.pt"):
+def train(
+    env,
+    total_steps=500_000,
+    seed=4,
+    filename="artifacts/swarm.pt",
+    model=None,
+):
     """Train one policy from experience collected by all three attackers."""
 
     torch.manual_seed(seed)
     np.random.seed(seed)
-    model = SharedPolicy(env.observation_size, env.action_count)
+    if model is None:
+        model = SharedPolicy(env.observation_size, env.action_count)
+    model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
     observations = env.reset(seed)
     episode_number = 0
@@ -114,7 +122,7 @@ def train(env, total_steps=500_000, seed=4, filename="artifacts/swarm.pt"):
 
     save_model(model, filename)
     rate = successes / max(episode_number, 1)
-    print(f"training episodes={episode_number} success_rate={rate:.1%}")
+    print(f"training steps={total_steps} episodes={episode_number} success_rate={rate:.1%}")
     print(f"saved {filename}")
     return model
 
@@ -158,4 +166,3 @@ def _ppo_update(model, optimizer, observations, actions, old_logs, advantages, r
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 0.5)
             optimizer.step()
-

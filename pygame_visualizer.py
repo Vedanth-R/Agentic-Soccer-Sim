@@ -46,9 +46,15 @@ def draw(screen, env, font, paused, speed, seed):
     pygame.draw.line(screen, LINE_COLOR, (center[0], field.top), (center[0], field.bottom), 2)
     pygame.draw.circle(screen, LINE_COLOR, center, round(9.15 * field.width / env.width), 2)
 
-    # The yellow line is the attackers' objective.
-    progress_x = screen_position(env, (env.progression_x, 0))[0]
-    pygame.draw.line(screen, (255, 210, 70), (progress_x, field.top), (progress_x, field.bottom), 3)
+    # Draw the goal that the attackers must actually score in.
+    goal_top = screen_position(env, (env.width, env.goal_center_y - env.goal_width / 2))[1]
+    goal_bottom = screen_position(env, (env.width, env.goal_center_y + env.goal_width / 2))[1]
+    pygame.draw.rect(
+        screen,
+        LINE_COLOR,
+        (field.right, goal_top, 16, goal_bottom - goal_top),
+        3,
+    )
 
     for player in env.players.values():
         center = screen_position(env, player.position)
@@ -73,12 +79,12 @@ def draw(screen, env, font, paused, speed, seed):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="artifacts/ppo_swarm_3v2.pt")
+    parser.add_argument("--model", default="artifacts/goal_swarm_3v2.pt")
     parser.add_argument("--seed", type=int, default=20_000)
     parser.add_argument(
         "--jitter",
         type=float,
-        default=2.0,
+        default=8.0,
         help="maximum random position change in metres",
     )
     args = parser.parse_args()

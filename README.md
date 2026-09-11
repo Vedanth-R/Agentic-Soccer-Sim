@@ -1,63 +1,103 @@
 # PitchLab: 3v2 Swarm
 
-This project currently runs a 3v2 sim with 3 attacking agents sharing one neural network trained on shared data, and 2 scripted defenders. Success is defined as moving the ball past a certain point on the field without losing it to the defenders. Current bugs include the attackers simply kicking the ball downfield to the point on the field.
+PitchLab trains three attacking soccer agents that share one PyTorch neural
+network. They play against two scripted defenders and must score in the goal.
+
+The nearest defender presses the ball while the second defender marks a
+forward attacker. The attackers make separate decisions because each receives
+its own view of the players and ball.
 
 ## Run it
 
-Activate the existing environment:
-
 ```bash
 source .venv/bin/activate
-```
-
-Watch the trained agents in the Pygame visualization:
-
-```bash
 python pygame_visualizer.py
 ```
 
-Press `N` to generate a new seeded starting layout and `R` to replay the
-current layout. Increase the amount of position variation with:
+Viewer controls:
+
+- `Space`: pause or resume
+- `R`: replay the same layout
+- `N`: use the next seeded layout
+- `-` / `+`: change playback speed
+- `Esc`: quit
+
+Choose a repeatable layout or adjust the starting variation:
 
 ```bash
-python pygame_visualizer.py --jitter 6
+python pygame_visualizer.py --seed 20025
+python pygame_visualizer.py --jitter 12
 ```
 
-The `--jitter` option only changes the layouts shown in the viewer. The saved
-network was trained with default 2-metre variations among the players, so larger values test
-how well it generalizes.
+The trained model used the default 8-metre vertical variation. Larger jitter
+values test layouts outside its normal training distribution.
 
-To change the formation itself, edit the `STARTING_POSITIONS` dictionary near the top of `swarm_3v2.py`.
-
-Evaluate the trained model over 100 repeatable layouts from its familiar
-formation range:
+## Evaluate
 
 ```bash
 python swarm_3v2.py
 ```
 
-Train a new model and then evaluate it:
+Evaluation uses 200 held-out layouts and reports:
+
+- The complete learned policy
+- The same policy with both off-ball attackers forced to stand still
+- A direct run-and-shoot strategy
+
+Current results:
+
+| Strategy | Goals | Turnovers | Completed passes per episode |
+|---|---:|---:|---:|
+| Learned policy | 99.0% | 1.0% | 1.45 |
+| Off-ball players frozen | 68.5% | 31.5% | 2.37 |
+| Direct run and shoot | 35.5% | 64.5% | 0.00 |
+
+The off-ball test is important: the large performance drop when those players
+are frozen shows that their movement contributes to the trained policy.
+
+## Train
 
 ```bash
 python swarm_3v2.py --train
 ```
 
-The default training run uses 500,000 simulation steps and saves the result to
-`artifacts/ppo_swarm_3v2.pt`. Each training episode uses the base formation with
-up to 2 metres of random movement per player.
+Training uses a three-stage curriculum:
 
+1. Learn to approach and shoot near goal with stationary defenders.
+2. Start farther from goal against moderately fast defenders.
+3. Train on the complete 3v2 with broader layouts and stronger defenders.
 
-## What the agents learn
+The final stage uses 700,000 simulation steps by default. Change only that
+stage's budget with, for example:
 
-The attackers share this team reward:
+```bash
+python swarm_3v2.py --train --steps 1000000
+```
 
-- `+10` for crossing the yellow progression line
-- `-10` when the defenders take the ball
-- `-10` for running out of time
-- Small rewards for forward ball movement and completed passes
+The resulting model is saved to `artifacts/goal_swarm_3v2.pt`.
 
-I am currently working on fixing this system so they do not just kick the ball towards the line. I am also working to add better defending actions. 
+## Rewards
 
-The defenders are not trained. The nearest defender presses the ball and the
-other protects the middle.
+All three attackers receive the same team reward:
+
+- `+20` for scoring
+- `-10` for losing possession, putting the ball out, or timing out
+- Up to `+0.4` for each of the first three completed forward passes
+- Small changes for forward ball progress and creating safe passing options
+- A small time cost and penalty for trying to shoot too early
+
+Scoring is worth much more than the shaping rewards. Kicking the ball beyond
+the end line outside the goal is a failure, so the old strategy of booting the
+ball toward a progression line no longer works.
+
+## Code
+
+Read the project in this order:
+
+1. `swarm_3v2.py` — world, physics, observations, rewards, training stages, and evaluation
+2. `neural_network.py` — shared actor-critic network and PPO training
+3. `pygame_visualizer.py` — visual replay of the saved policy
+
+The result measures performance in this small simulation and should not be
+treated as evidence about real-world soccer tactics.
 
