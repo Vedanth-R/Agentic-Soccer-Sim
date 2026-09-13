@@ -19,10 +19,21 @@ Viewer controls:
 - `Space`: pause or resume
 - `R`: replay the same layout
 - `N`: use the next seeded layout
+- `E`: edit the current starting setup
 - `-` / `+`: change playback speed
 - `Esc`: quit
 
-Choose a repeatable layout or adjust the starting variation:
+In edit mode:
+
+- Drag any blue attacker to a new starting position.
+- Press `1`, `2`, or `3` to choose which attacker starts with the ball.
+- Press `Enter` to save that setup and run the model.
+- Press `R` afterward to replay the exact custom setup.
+
+This lets you test layouts the model did not encounter during training. Poor
+performance on a custom layout is useful evidence about the limits of its
+generalization. Curently, many custom layouts show poor performance. I am 
+working to try and figure out how to fine tune.
 
 ```bash
 python pygame_visualizer.py --seed 20025
@@ -89,15 +100,4 @@ All three attackers receive the same team reward:
 Scoring is worth much more than the shaping rewards. Kicking the ball beyond
 the end line outside the goal is a failure, so the old strategy of booting the
 ball toward a progression line no longer works.
-
-## Code
-
-Read the project in this order:
-
-1. `swarm_3v2.py` — world, physics, observations, rewards, training stages, and evaluation
-2. `neural_network.py` — shared actor-critic network and PPO training
-3. `pygame_visualizer.py` — visual replay of the saved policy
-
-The result measures performance in this small simulation and should not be
-treated as evidence about real-world soccer tactics.
 

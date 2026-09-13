@@ -25,7 +25,55 @@ def screen_position(env, position):
     return round(left + position[0] * scale), round(TOP + position[1] * scale)
 
 
-def draw(screen, env, font, paused, speed, seed):
+def pitch_position(env, mouse_position):
+    """Convert screen pixels back into pitch metres for mouse dragging."""
+
+    scale = min((WINDOW[0] - 2 * MARGIN) / env.width, (WINDOW[1] - TOP - MARGIN) / env.height)
+    field_width = env.width * scale
+    left = (WINDOW[0] - field_width) / 2
+    x = min(max((mouse_position[0] - left) / scale, 0), env.width)
+    y = min(max((mouse_position[1] - TOP) / scale, 0), env.height)
+    return x, y
+
+
+def capture_setup(env):
+    """Remember a starting arrangement so R can replay it exactly."""
+
+    return {
+        "positions": {number: player.position.copy() for number, player in env.players.items()},
+        "owner": env.ball.owner,
+    }
+
+
+def restore_setup(env, setup, seed):
+    """Reset episode counters, then restore the saved custom positions."""
+
+    env.reset(seed)
+    for number, position in setup["positions"].items():
+        env.players[number].position = position.copy()
+        env.players[number].velocity[:] = 0
+        env.players[number].has_ball = False
+    owner = setup["owner"]
+    env.players[owner].has_ball = True
+    env.ball.owner = owner
+    env.ball.position = env.players[owner].position.copy()
+    env.ball.velocity[:] = 0
+    env.ball.target_player = None
+    env.ball.possession_ticks = 0
+    return env.observations()
+
+
+def choose_ball_owner(env, number):
+    for player in env.players.values():
+        player.has_ball = False
+    env.players[number].has_ball = True
+    env.ball.owner = number
+    env.ball.position = env.players[number].position.copy()
+    env.ball.velocity[:] = 0
+    env.ball.target_player = None
+
+
+def draw(screen, env, font, paused, speed, seed, editing, selected_player):
     screen.fill((24, 31, 36))
     top_left = screen_position(env, (0, 0))
     bottom_right = screen_position(env, (env.width, env.height))
@@ -58,6 +106,8 @@ def draw(screen, env, font, paused, speed, seed):
 
     for player in env.players.values():
         center = screen_position(env, player.position)
+        if player.number == selected_player:
+            pygame.draw.circle(screen, (255, 165, 50), center, 19, 3)
         if player.has_ball:
             pygame.draw.circle(screen, (255, 210, 70), center, 16, 3)
         pygame.draw.circle(screen, TEAM_COLORS[player.team], center, 11)
@@ -70,10 +120,13 @@ def draw(screen, env, font, paused, speed, seed):
     pygame.draw.circle(screen, (25, 25, 25), ball, 6, 2)
 
     seconds = env.tick / env.ticks_per_second
-    mode = "PAUSED" if paused else "PLAYING"
+    mode = "EDIT START" if editing else ("PAUSED" if paused else "PLAYING")
     status = f"{mode}   {speed:g}x   {seconds:.1f}s   SEED {seed}   {env.result.upper()}"
     screen.blit(font.render(status, True, (245, 245, 245)), (MARGIN, 28))
-    help_text = "Space: pause   R: replay   N: new positions   -/+: speed   Esc: quit"
+    if editing:
+        help_text = "Drag blue players   1/2/3: choose ball   Enter: start   Esc: quit"
+    else:
+        help_text = "E: edit start   Space: pause   R: replay   N: new layout   -/+: speed"
     screen.blit(font.render(help_text, True, (180, 190, 195)), (MARGIN, 58))
 
 
@@ -98,9 +151,12 @@ def main():
     env = Swarm3v2(starting_jitter=args.jitter)
     current_seed = args.seed
     observations = env.reset(current_seed)
+    starting_setup = capture_setup(env)
     speeds = (0.25, 0.5, 1.0, 2.0, 4.0)
     speed_index = 2
     paused = False
+    editing = False
+    selected_player = None
     accumulated_time = 0.0
     running = True
 
@@ -111,15 +167,52 @@ def main():
                 event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE
             ):
                 running = False
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_e:
+                observations = restore_setup(env, starting_setup, current_seed)
+                editing = True
+                paused = True
+                selected_player = None
+                accumulated_time = 0.0
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN and editing:
+                starting_setup = capture_setup(env)
+                observations = env.observations()
+                editing = False
+                paused = False
+                accumulated_time = 0.0
+            elif event.type == pygame.KEYDOWN and editing and event.key in (
+                pygame.K_1,
+                pygame.K_2,
+                pygame.K_3,
+            ):
+                choose_ball_owner(env, event.key - pygame.K_0)
+                observations = env.observations()
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE and not editing:
                 paused = not paused
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                observations = env.reset(current_seed)
+                observations = restore_setup(env, starting_setup, current_seed)
+                editing = False
+                paused = False
                 accumulated_time = 0.0
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_n:
                 current_seed += 1
                 observations = env.reset(current_seed)
+                starting_setup = capture_setup(env)
+                editing = False
+                paused = False
                 accumulated_time = 0.0
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and editing:
+                for number in env.attacker_ids:
+                    center = screen_position(env, env.players[number].position)
+                    if (event.pos[0] - center[0]) ** 2 + (event.pos[1] - center[1]) ** 2 <= 18 ** 2:
+                        selected_player = number
+                        break
+            elif event.type == pygame.MOUSEMOTION and selected_player is not None:
+                env.players[selected_player].position[:] = pitch_position(env, event.pos)
+                if env.ball.owner == selected_player:
+                    env.ball.position = env.players[selected_player].position.copy()
+                observations = env.observations()
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                selected_player = None
             elif event.type == pygame.KEYDOWN and event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                 speed_index = max(0, speed_index - 1)
             elif event.type == pygame.KEYDOWN and event.key in (
@@ -129,13 +222,22 @@ def main():
             ):
                 speed_index = min(len(speeds) - 1, speed_index + 1)
 
-        if not paused and env.result == "running":
+        if not paused and not editing and env.result == "running":
             accumulated_time += real_seconds * speeds[speed_index]
             while accumulated_time >= 1 / env.ticks_per_second:
                 observations, _, _, _ = env.step(model_actions(model, observations))
                 accumulated_time -= 1 / env.ticks_per_second
 
-        draw(screen, env, font, paused, speeds[speed_index], current_seed)
+        draw(
+            screen,
+            env,
+            font,
+            paused,
+            speeds[speed_index],
+            current_seed,
+            editing,
+            selected_player,
+        )
         pygame.display.flip()
 
     pygame.quit()
