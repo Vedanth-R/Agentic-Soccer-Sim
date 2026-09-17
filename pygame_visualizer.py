@@ -58,7 +58,7 @@ def restore_setup(env, setup, seed):
     env.ball.owner = owner
     env.ball.position = env.players[owner].position.copy()
     env.ball.velocity[:] = 0
-    env.ball.target_player = None
+    env.ball.intended_receiver = None
     env.ball.possession_ticks = 0
     return env.observations()
 
@@ -70,7 +70,7 @@ def choose_ball_owner(env, number):
     env.ball.owner = number
     env.ball.position = env.players[number].position.copy()
     env.ball.velocity[:] = 0
-    env.ball.target_player = None
+    env.ball.intended_receiver = None
 
 
 def draw(screen, env, font, paused, speed, seed, editing, selected_player):

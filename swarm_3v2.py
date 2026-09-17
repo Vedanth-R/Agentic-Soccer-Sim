@@ -63,7 +63,7 @@ class Ball:
     velocity: np.ndarray
     owner: Optional[int] = None
     possession_ticks: int = 0
-    target_player: Optional[int] = None
+    intended_receiver: Optional[int] = None
 
 
 class Swarm3v2:
@@ -284,11 +284,17 @@ class Swarm3v2:
             teammates = [self.players[n] for n in self.attacker_ids if n != owner]
             ahead = [player for player in teammates if player.position[0] > self.players[owner].position[0]]
             receiver = max(ahead or teammates, key=lambda player: player.position[0])
-            self._start_kick(receiver.position, receiver.number)
+            # Aim once at where the receiver is currently running. The ball
+            # keeps this direction after the kick; it never homes or curves.
+            travel_time = distance(self.ball.position, receiver.position) / 20.0
+            lead_time = min(travel_time, 1.5)
+            target = receiver.position + receiver.velocity * lead_time
+            target = np.clip(target, (1, 1), (self.width - 1, self.height - 1))
+            self._start_kick(target, receiver.number, speed=24.0)
         elif action == Action.SHOOT and self.players[owner].position[0] >= self.shooting_x:
-            self._start_kick(np.array([self.width + 1, self.goal_center_y]), None)
+            self._start_kick(np.array([self.width + 1, self.goal_center_y]), speed=22.0)
 
-    def _start_kick(self, target, receiver):
+    def _start_kick(self, target, intended_receiver=None, speed=24.0):
         owner = self.players[self.ball.owner]
         difference = target - self.ball.position
         length = np.linalg.norm(difference)
@@ -297,32 +303,22 @@ class Swarm3v2:
         owner.has_ball = False
         self.ball.owner = None
         self.ball.possession_ticks = 0
-        self.ball.target_player = receiver
-        self.ball.velocity = difference / length * 18.0
+        self.ball.intended_receiver = intended_receiver
+        self.ball.velocity = difference / length * speed
 
     def _move_ball(self):
         if self.ball.owner is not None:
             return
-        if self.ball.target_player in self.players:
-            target = self.players[self.ball.target_player].position
-            difference = target - self.ball.position
-            length = np.linalg.norm(difference)
-            if length <= 2.8:
-                self.ball.position = target.copy()
-                self.ball.velocity[:] = 0
-                self.ball.target_player = None
-                return
-            self.ball.velocity = difference / length * 18.0
         self.ball.position += self.ball.velocity / self.ticks_per_second
-        if self.ball.target_player is None:
-            self.ball.velocity *= 0.97
+        self.ball.velocity *= 0.97
 
     def _collect_loose_ball(self):
         if self.ball.owner is not None:
             return
         nearby = [
             player for player in self.players.values()
-            if distance(player.position, self.ball.position) <= 1.0
+            if distance(player.position, self.ball.position)
+            <= (2.0 if player.number == self.ball.intended_receiver else 1.0)
         ]
         if nearby:
             winner = min(nearby, key=lambda player: (distance(player.position, self.ball.position), player.number))
@@ -331,7 +327,7 @@ class Swarm3v2:
             self.ball.position = winner.position.copy()
             self.ball.velocity[:] = 0
             self.ball.possession_ticks = 0
-            self.ball.target_player = None
+            self.ball.intended_receiver = None
 
     def _defender_directions(self):
         pressing = min(

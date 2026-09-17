@@ -7,6 +7,7 @@ The nearest defender presses the ball while the second defender marks a
 forward attacker. The attackers make separate decisions because each receives
 its own view of the players and ball.
 
+
 ## Run it
 
 ```bash
@@ -55,16 +56,14 @@ Evaluation uses 200 held-out layouts and reports:
 - The same policy with both off-ball attackers forced to stand still
 - A direct run-and-shoot strategy
 
-Current results:
+Current checkpoint results:
 
 | Strategy | Goals | Turnovers | Completed passes per episode |
 |---|---:|---:|---:|
-| Learned policy | 99.0% | 1.0% | 1.45 |
-| Off-ball players frozen | 68.5% | 31.5% | 2.37 |
+| Learned policy | 33.0% | 66.5% | 0.00 |
+| Off-ball players frozen | 31.5% | 68.0% | 0.00 |
 | Direct run and shoot | 35.5% | 64.5% | 0.00 |
 
-The off-ball test is important: the large performance drop when those players
-are frozen shows that their movement contributes to the trained policy.
 
 ## Train
 
@@ -96,8 +95,3 @@ All three attackers receive the same team reward:
 - Up to `+0.4` for each of the first three completed forward passes
 - Small changes for forward ball progress and creating safe passing options
 - A small time cost and penalty for trying to shoot too early
-
-Scoring is worth much more than the shaping rewards. Kicking the ball beyond
-the end line outside the goal is a failure, so the old strategy of booting the
-ball toward a progression line no longer works.
-
