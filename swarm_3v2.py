@@ -141,19 +141,39 @@ class Swarm3v2:
         old_owner = self.ball.owner
         old_support = self._support_score()
 
+        # If a pass is already travelling, measure whether its receiver moves
+        # toward where the ball will be next. This isolates the receiver's
+        # movement instead of rewarding the ball simply moving toward them.
+        receiver_move = 0.0
+        receiver = self.ball.intended_receiver
+        if self.ball.owner is None and receiver in self.attacker_ids:
+            next_ball_position = (
+                self.ball.position + self.ball.velocity / self.ticks_per_second
+            )
+            old_receiver_distance = distance(
+                self.players[receiver].position, next_ball_position
+            )
+
         directions = {
             number: MOVEMENT.get(action, (0.0, 0.0))
             for number, action in zip(self.attacker_ids, actions)
         }
         directions.update(self._defender_directions())
         self._move_players(directions)
+        if self.ball.owner is None and receiver in self.attacker_ids:
+            new_receiver_distance = distance(
+                self.players[receiver].position, next_ball_position
+            )
+            receiver_move = float(
+                np.clip(old_receiver_distance - new_receiver_distance, 0.0, 0.7)
+            )
         self._tackle_if_close()
 
         premature_shot = False
         if self.ball.owner in self.attacker_ids:
             owner_action = actions[self.attacker_ids.index(self.ball.owner)]
             premature_shot = owner_action == Action.SHOOT and self.ball.position[0] < self.shooting_x
-        self._kick_ball(actions)
+        useful_pass_started = self._kick_ball(actions)
         self._move_ball()
         self._collect_loose_ball()
 
@@ -164,7 +184,13 @@ class Swarm3v2:
         # Small shaping rewards help learning, but scoring is worth much more.
         progress = float(np.clip(self.ball.position[0] - old_ball_x, -1.0, 1.0))
         reward = 0.02 * progress - 0.003
-        reward += 0.15 * (self._support_score() - old_support)
+        # Compare support positions only while the same attacker keeps the
+        # ball. A kick makes support_score zero, which should not penalize the
+        # act of passing.
+        if old_owner in self.attacker_ids and self.ball.owner == old_owner:
+            reward += 0.15 * (self._support_score() - old_support)
+        reward += 0.03 * receiver_move
+        reward += 0.10 if useful_pass_started else 0.0
         reward -= 0.03 if premature_shot else 0.0
 
         self.completed_pass = False
@@ -172,7 +198,8 @@ class Swarm3v2:
             self.completed_pass = self.ball.owner != self.passer
             forward_pass = self.players[self.ball.owner].position[0] > self.pass_start_x + 2.0
             if self.completed_pass and forward_pass and self.rewarded_passes < 3:
-                reward += 0.4
+                forward_metres = self.players[self.ball.owner].position[0] - self.pass_start_x
+                reward += 0.6 + min(0.02 * forward_metres, 0.4)
                 self.rewarded_passes += 1
             self.passer = None
 
@@ -278,7 +305,7 @@ class Swarm3v2:
     def _kick_ball(self, actions):
         owner = self.ball.owner
         if owner not in self.attacker_ids:
-            return
+            return False
         action = actions[self.attacker_ids.index(owner)]
         if action == Action.PASS:
             teammates = [self.players[n] for n in self.attacker_ids if n != owner]
@@ -290,9 +317,16 @@ class Swarm3v2:
             lead_time = min(travel_time, 1.5)
             target = receiver.position + receiver.velocity * lead_time
             target = np.clip(target, (1, 1), (self.width - 1, self.height - 1))
+            forward_pass = receiver.position[0] > self.players[owner].position[0] + 2.0
+            open_lane = min(
+                point_to_segment(self.players[d].position, self.ball.position, target)
+                for d in self.defender_ids
+            ) >= 2.5
             self._start_kick(target, receiver.number, speed=24.0)
+            return forward_pass and open_lane
         elif action == Action.SHOOT and self.players[owner].position[0] >= self.shooting_x:
             self._start_kick(np.array([self.width + 1, self.goal_center_y]), speed=22.0)
+        return False
 
     def _start_kick(self, target, intended_receiver=None, speed=24.0):
         owner = self.players[self.ball.owner]
