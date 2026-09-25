@@ -1,7 +1,7 @@
-"""A small 3v2 soccer world used for training and evaluation.
+"""A configurable soccer world used for training and evaluation.
 
-Three attackers share one neural network. One defender presses the ball while
-the other marks a forward attacker. The episode is won only by scoring a goal.
+Attackers share one neural network. One defender presses the ball while the
+others mark forward attackers. The episode is won only by scoring a goal.
 """
 
 import argparse
@@ -12,7 +12,7 @@ from typing import Optional
 import numpy as np
 import torch
 
-from neural_network import load_model, train
+from neural_network import load_model, save_model, train
 
 
 class Action(IntEnum):
@@ -37,9 +37,8 @@ MOVEMENT = {
     Action.DOWN_RIGHT: (1.0, 1.0),
 }
 
-# Edit these base positions to change the formation. Training adds random
-# variation and randomly chooses which attacker starts with the ball.
-STARTING_POSITIONS = {
+# The original formation is preserved for the default 3v2 experiment.
+THREE_V_TWO_POSITIONS = {
     1: (42.0, 34.0),
     2: (50.0, 18.0),
     3: (50.0, 50.0),
@@ -66,7 +65,7 @@ class Ball:
     intended_receiver: Optional[int] = None
 
 
-class Swarm3v2:
+class SwarmSoccer:
     width = 105.0
     height = 68.0
     goal_center_y = 34.0
@@ -74,18 +73,28 @@ class Swarm3v2:
     shooting_x = 72.0
     ticks_per_second = 10
     max_ticks = 400
-    observation_size = 16
     action_count = 9
-    attacker_ids = (1, 2, 3)
-    defender_ids = (4, 5)
+    max_attackers = 6
+    max_defenders = 6
+    observation_size = 41
 
     def __init__(
         self,
+        num_attackers=3,
+        num_defenders=2,
         starting_jitter=8.0,
         defender_speed=0.90,
         attacker_x_offset=0.0,
         max_ticks=400,
     ):
+        self._validate_roster(num_attackers, num_defenders)
+        self.num_attackers = num_attackers
+        self.num_defenders = num_defenders
+        self.attacker_ids = tuple(range(1, num_attackers + 1))
+        self.defender_ids = tuple(
+            range(num_attackers + 1, num_attackers + num_defenders + 1)
+        )
+        self.starting_positions = self._starting_positions()
         self.starting_jitter = starting_jitter
         self.defender_speed = defender_speed
         self.attacker_x_offset = attacker_x_offset
@@ -94,12 +103,35 @@ class Swarm3v2:
         self.ball = None
         self.reset(0)
 
+    @classmethod
+    def _validate_roster(cls, num_attackers, num_defenders):
+        if num_attackers < 2 or num_defenders < 1:
+            raise ValueError("A scenario needs at least two attackers and one defender")
+        if num_attackers > cls.max_attackers or num_defenders > cls.max_defenders:
+            raise ValueError(
+                f"The shared observation supports at most {cls.max_attackers} attackers "
+                f"and {cls.max_defenders} defenders"
+            )
+
+    def _starting_positions(self):
+        if self.num_attackers == 3 and self.num_defenders == 2:
+            return dict(THREE_V_TWO_POSITIONS)
+
+        positions = {1: (42.0, 34.0)}
+        other_y = np.linspace(10.0, 58.0, self.num_attackers)[1:]
+        for index, y in enumerate(other_y, start=2):
+            positions[index] = (48.0, float(y))
+        defender_y = np.linspace(12.0, 56.0, self.num_defenders)
+        for index, y in enumerate(defender_y, start=self.num_attackers + 1):
+            positions[index] = (68.0, float(y))
+        return positions
+
     def reset(self, seed=0):
         """Create a repeatable but meaningfully varied starting layout."""
 
         rng = np.random.default_rng(seed)
         self.players = {}
-        for number, start in STARTING_POSITIONS.items():
+        for number, start in self.starting_positions.items():
             # Vertical variation is wider than horizontal variation.
             position = np.array(
                 [
@@ -118,6 +150,44 @@ class Swarm3v2:
             )
 
         owner = int(rng.choice(self.attacker_ids))
+        return self._begin_episode(owner)
+
+    def set_setup(self, players, owner=None):
+        """Replace the roster and positions with an editor or saved scenario."""
+
+        entries = list(players)
+        attacker_ids = tuple(sorted(int(p["number"]) for p in entries if int(p["team"]) == 0))
+        defender_ids = tuple(sorted(int(p["number"]) for p in entries if int(p["team"]) == 1))
+        self._validate_roster(len(attacker_ids), len(defender_ids))
+        numbers = attacker_ids + defender_ids
+        if len(numbers) != len(set(numbers)):
+            raise ValueError("Player numbers must be unique")
+
+        self.attacker_ids = attacker_ids
+        self.defender_ids = defender_ids
+        self.num_attackers = len(attacker_ids)
+        self.num_defenders = len(defender_ids)
+        self.starting_positions = {
+            int(entry["number"]): tuple(float(value) for value in entry["position"])
+            for entry in entries
+        }
+        self.players = {}
+        for entry in entries:
+            number = int(entry["number"])
+            position = np.clip(np.asarray(entry["position"], dtype=float), (0, 0), (self.width, self.height))
+            self.players[number] = Player(
+                number=number,
+                team=int(entry["team"]),
+                position=position,
+                velocity=np.zeros(2),
+            )
+        if owner not in self.attacker_ids:
+            owner = self.attacker_ids[0]
+        return self._begin_episode(owner)
+
+    def _begin_episode(self, owner):
+        for player in self.players.values():
+            player.has_ball = player.number == owner
         self.players[owner].has_ball = True
         self.ball = Ball(self.players[owner].position.copy(), np.zeros(2), owner)
         self.tick = 0
@@ -131,8 +201,8 @@ class Swarm3v2:
     def step(self, action_ids):
         """Advance one tenth of a second and return one shared team reward."""
 
-        if len(action_ids) != 3:
-            raise ValueError("The three attackers each need one action")
+        if len(action_ids) != self.num_attackers:
+            raise ValueError(f"All {self.num_attackers} attackers need one action")
         if self.result != "running":
             return self.observations(), 0.0, True, self.result
 
@@ -229,8 +299,14 @@ class Swarm3v2:
 
     def _observation(self, number):
         player = self.players[number]
-        teammates = [self.players[n] for n in self.attacker_ids if n != number]
-        defenders = [self.players[n] for n in self.defender_ids]
+        teammates = sorted(
+            (self.players[n] for n in self.attacker_ids if n != number),
+            key=lambda other: (distance(player.position, other.position), other.number),
+        )
+        defenders = sorted(
+            (self.players[n] for n in self.defender_ids),
+            key=lambda other: (distance(player.position, other.position), other.number),
+        )
         values = [
             2 * player.position[0] / self.width - 1,
             2 * player.position[1] / self.height - 1,
@@ -241,13 +317,24 @@ class Swarm3v2:
             1.0 if self.ball.owner == number else -1.0,
             1.0 if self.ball.owner in self.attacker_ids else -1.0,
         ]
-        for other in teammates + defenders:
+        for other in teammates:
             values.extend(
                 [
                     (other.position[0] - player.position[0]) / self.width,
                     (other.position[1] - player.position[1]) / self.height,
+                    1.0,
                 ]
             )
+        values.extend([0.0, 0.0, 0.0] * (self.max_attackers - 1 - len(teammates)))
+        for other in defenders:
+            values.extend(
+                [
+                    (other.position[0] - player.position[0]) / self.width,
+                    (other.position[1] - player.position[1]) / self.height,
+                    1.0,
+                ]
+            )
+        values.extend([0.0, 0.0, 0.0] * (self.max_defenders - len(defenders)))
         return np.clip(np.array(values, np.float32), -1, 1)
 
     def _support_score(self):
@@ -369,12 +456,17 @@ class Swarm3v2:
             key=lambda number: distance(self.players[number].position, self.ball.position),
         )
         directions = {}
+        markers = [number for number in self.defender_ids if number != pressing]
+        attacking_options = sorted(
+            (self.players[n] for n in self.attacker_ids),
+            key=lambda player: player.position[0],
+            reverse=True,
+        )
         for number in self.defender_ids:
             if number == pressing:
                 target = self.ball.position
             else:
-                options = [self.players[n] for n in self.attacker_ids]
-                marked = max(options, key=lambda player: player.position[0])
+                marked = attacking_options[markers.index(number) % len(attacking_options)]
                 target = np.array([min(marked.position[0] + 3.0, 94.0), marked.position[1]])
             directions[number] = direction_to(
                 self.players[number].position,
@@ -410,17 +502,43 @@ def point_to_segment(point, start, end):
     return distance(point, start + amount * segment)
 
 
+class Swarm3v2(SwarmSoccer):
+    """The original training environment and checkpoint-compatible roster."""
+
+    def __init__(self, **kwargs):
+        super().__init__(num_attackers=3, num_defenders=2, **kwargs)
+
+
 def model_actions(model, observations):
     with torch.no_grad():
         logits, _ = model(torch.from_numpy(observations))
     return torch.argmax(logits, dim=-1).numpy()
 
 
-def _evaluate_actions(name, choose_actions, episodes=200, first_seed=20_000):
+def goal_rate(model, env_factory=Swarm3v2, episodes=100, first_seed=30_000):
+    """Return deterministic goal rate on held-out layouts without printing."""
+
+    goals = 0
+    for seed in range(first_seed, first_seed + episodes):
+        env = env_factory()
+        observations = env.reset(seed)
+        while env.result == "running":
+            observations, _, _, result = env.step(model_actions(model, observations))
+        goals += result == "success"
+    return goals / episodes
+
+
+def _evaluate_actions(
+    name,
+    choose_actions,
+    episodes=200,
+    first_seed=20_000,
+    env_factory=Swarm3v2,
+):
     outcomes = {"success": 0, "turnover": 0, "out": 0, "timeout": 0}
     passes = 0
     for seed in range(first_seed, first_seed + episodes):
-        env = Swarm3v2()
+        env = env_factory()
         observations = env.reset(seed)
         while env.result == "running":
             actions = choose_actions(env, observations)
@@ -455,7 +573,7 @@ def evaluate(model, episodes=200, first_seed=20_000):
     _evaluate_actions("off-ball players frozen", freeze_off_ball, episodes, first_seed)
 
     def direct_play(env, observations):
-        actions = np.full(3, Action.RIGHT)
+        actions = np.full(len(env.attacker_ids), Action.RIGHT)
         if env.ball.owner in env.attacker_ids:
             owner = env.players[env.ball.owner]
             if owner.position[0] >= env.shooting_x:
@@ -463,6 +581,23 @@ def evaluate(model, episodes=200, first_seed=20_000):
         return actions
 
     _evaluate_actions("direct run and shoot", direct_play, episodes, first_seed)
+
+    for attackers, defenders in ((5, 4), (6, 4)):
+        make_env = lambda a=attackers, d=defenders: SwarmSoccer(a, d)
+        _evaluate_actions(
+            f"learned policy {attackers}v{defenders}",
+            lambda env, observations: model_actions(model, observations),
+            episodes,
+            first_seed,
+            make_env,
+        )
+        _evaluate_actions(
+            f"direct baseline {attackers}v{defenders}",
+            direct_play,
+            episodes,
+            first_seed,
+            make_env,
+        )
 
 
 def main():
@@ -477,6 +612,14 @@ def main():
     parser.add_argument("--model", default="artifacts/goal_swarm_3v2.pt")
     args = parser.parse_args()
     if args.train:
+        candidates = []
+
+        def remember_stage(stage_name, trained_model):
+            rate = goal_rate(trained_model)
+            state = {name: value.detach().clone() for name, value in trained_model.state_dict().items()}
+            candidates.append((rate, stage_name, state))
+            print(f"held-out full-3v2 goal rate after {stage_name}: {rate:.1%}")
+
         print("stage 1/3: learn to approach and shoot")
         model = train(
             Swarm3v2(starting_jitter=4, defender_speed=0, attacker_x_offset=25, max_ticks=200),
@@ -484,6 +627,7 @@ def main():
             seed=4,
             filename=args.model,
         )
+        remember_stage("stage 1", model)
         print("stage 2/3: add distance and moderate pressure")
         model = train(
             Swarm3v2(starting_jitter=6, defender_speed=0.65, attacker_x_offset=12, max_ticks=300),
@@ -492,6 +636,7 @@ def main():
             filename=args.model,
             model=model,
         )
+        remember_stage("stage 2", model)
         print("stage 3/3: train the complete 3v2")
         model = train(
             Swarm3v2(),
@@ -500,6 +645,11 @@ def main():
             filename=args.model,
             model=model,
         )
+        remember_stage("stage 3", model)
+        best_rate, best_stage, best_state = max(candidates, key=lambda candidate: candidate[0])
+        model.load_state_dict(best_state)
+        save_model(model, args.model)
+        print(f"kept {best_stage} checkpoint ({best_rate:.1%} held-out goals)")
     else:
         model = load_model(args.model)
     evaluate(model)

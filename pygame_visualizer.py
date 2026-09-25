@@ -1,11 +1,13 @@
 """Watch the trained 3v2 swarm. This file only draws and controls playback."""
 
 import argparse
+import json
+from pathlib import Path
 
 import pygame
 
 from neural_network import load_model
-from swarm_3v2 import Swarm3v2, model_actions
+from swarm_3v2 import Swarm3v2, SwarmSoccer, model_actions
 
 
 WINDOW = (1100, 760)
@@ -40,27 +42,64 @@ def capture_setup(env):
     """Remember a starting arrangement so R can replay it exactly."""
 
     return {
-        "positions": {number: player.position.copy() for number, player in env.players.items()},
+        "players": [
+            {
+                "number": number,
+                "team": player.team,
+                "position": player.position.tolist(),
+            }
+            for number, player in sorted(env.players.items())
+        ],
         "owner": env.ball.owner,
     }
 
 
-def restore_setup(env, setup, seed):
-    """Reset episode counters, then restore the saved custom positions."""
+def restore_setup(env, setup):
+    """Restore a roster, its positions, and all episode counters."""
 
-    env.reset(seed)
-    for number, position in setup["positions"].items():
-        env.players[number].position = position.copy()
-        env.players[number].velocity[:] = 0
-        env.players[number].has_ball = False
-    owner = setup["owner"]
-    env.players[owner].has_ball = True
-    env.ball.owner = owner
-    env.ball.position = env.players[owner].position.copy()
-    env.ball.velocity[:] = 0
-    env.ball.intended_receiver = None
-    env.ball.possession_ticks = 0
-    return env.observations()
+    return env.set_setup(setup["players"], setup["owner"])
+
+
+def save_setup(setup, filename):
+    path = Path(filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(setup, indent=2) + "\n")
+
+
+def load_setup(filename):
+    return json.loads(Path(filename).read_text())
+
+
+def add_player(env, team, position):
+    team_size = env.num_attackers if team == 0 else env.num_defenders
+    team_limit = env.max_attackers if team == 0 else env.max_defenders
+    if team_size >= team_limit:
+        return None
+    setup = capture_setup(env)
+    number = max(env.players) + 1
+    setup["players"].append({"number": number, "team": team, "position": list(position)})
+    env.set_setup(setup["players"], setup["owner"])
+    return number
+
+
+def remove_player(env, number):
+    setup = capture_setup(env)
+    player = env.players[number]
+    minimum = 2 if player.team == 0 else 1
+    team_size = env.num_attackers if player.team == 0 else env.num_defenders
+    if team_size <= minimum:
+        return False
+    setup["players"] = [entry for entry in setup["players"] if entry["number"] != number]
+    if setup["owner"] == number:
+        setup["owner"] = next(
+            entry["number"] for entry in setup["players"] if entry["team"] == 0
+        )
+    env.set_setup(setup["players"], setup["owner"])
+    return True
+
+
+def model_compatible(model, env):
+    return model.body[0].in_features == env.observation_size
 
 
 def choose_ball_owner(env, number):
@@ -71,9 +110,10 @@ def choose_ball_owner(env, number):
     env.ball.position = env.players[number].position.copy()
     env.ball.velocity[:] = 0
     env.ball.intended_receiver = None
+    env.ball.possession_ticks = 0
 
 
-def draw(screen, env, font, paused, speed, seed, editing, selected_player):
+def draw(screen, env, font, paused, speed, seed, editing, selected_player, model_input_size):
     screen.fill((24, 31, 36))
     top_left = screen_position(env, (0, 0))
     bottom_right = screen_position(env, (env.width, env.height))
@@ -121,13 +161,17 @@ def draw(screen, env, font, paused, speed, seed, editing, selected_player):
 
     seconds = env.tick / env.ticks_per_second
     mode = "EDIT START" if editing else ("PAUSED" if paused else "PLAYING")
-    status = f"{mode}   {speed:g}x   {seconds:.1f}s   SEED {seed}   {env.result.upper()}"
+    roster = f"{env.num_attackers}v{env.num_defenders}"
+    status = f"{mode}   {roster}   {speed:g}x   {seconds:.1f}s   SEED {seed}   {env.result.upper()}"
     screen.blit(font.render(status, True, (245, 245, 245)), (MARGIN, 28))
     if editing:
-        help_text = "Drag blue players   1/2/3: choose ball   Enter: start   Esc: quit"
+        help_text = "Drag/select | A/D: add team | Delete: remove | B: ball | S/L: save/load | Enter: run"
     else:
         help_text = "E: edit start   Space: pause   R: replay   N: new layout   -/+: speed"
     screen.blit(font.render(help_text, True, (180, 190, 195)), (MARGIN, 58))
+    if model_input_size != env.observation_size:
+        warning = f"Saved model needs {model_input_size} inputs; this {roster} layout creates {env.observation_size}. Save it for Phase 2."
+        screen.blit(font.render(warning, True, (255, 190, 90)), (MARGIN, 84))
 
 
 def main():
@@ -140,22 +184,31 @@ def main():
         default=8.0,
         help="maximum random position change in metres",
     )
+    parser.add_argument("--attackers", type=int, default=3)
+    parser.add_argument("--defenders", type=int, default=2)
+    parser.add_argument("--scenario", default="scenarios/custom.json")
     args = parser.parse_args()
 
     pygame.init()
     screen = pygame.display.set_mode(WINDOW)
-    pygame.display.set_caption("PitchLab 3v2 Swarm")
+    pygame.display.set_caption("PitchLab Soccer Scenario Editor")
     font = pygame.font.Font(None, 23)
     clock = pygame.time.Clock()
     model = load_model(args.model)
     env = Swarm3v2(starting_jitter=args.jitter)
+    if args.attackers != 3 or args.defenders != 2:
+        env = SwarmSoccer(
+            num_attackers=args.attackers,
+            num_defenders=args.defenders,
+            starting_jitter=args.jitter,
+        )
     current_seed = args.seed
     observations = env.reset(current_seed)
     starting_setup = capture_setup(env)
     speeds = (0.25, 0.5, 1.0, 2.0, 4.0)
     speed_index = 2
-    paused = False
-    editing = False
+    paused = not model_compatible(model, env)
+    editing = paused
     selected_player = None
     accumulated_time = 0.0
     running = True
@@ -168,7 +221,7 @@ def main():
             ):
                 running = False
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_e:
-                observations = restore_setup(env, starting_setup, current_seed)
+                observations = restore_setup(env, starting_setup)
                 editing = True
                 paused = True
                 selected_player = None
@@ -176,43 +229,65 @@ def main():
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN and editing:
                 starting_setup = capture_setup(env)
                 observations = env.observations()
-                editing = False
-                paused = False
+                if model_compatible(model, env):
+                    editing = False
+                    paused = False
                 accumulated_time = 0.0
-            elif event.type == pygame.KEYDOWN and editing and event.key in (
-                pygame.K_1,
-                pygame.K_2,
-                pygame.K_3,
-            ):
-                choose_ball_owner(env, event.key - pygame.K_0)
+            elif event.type == pygame.KEYDOWN and editing and event.key == pygame.K_b:
+                if selected_player in env.attacker_ids:
+                    choose_ball_owner(env, selected_player)
+                    observations = env.observations()
+            elif event.type == pygame.KEYDOWN and editing and event.key in (pygame.K_a, pygame.K_d):
+                team = 0 if event.key == pygame.K_a else 1
+                added_player = add_player(env, team, pitch_position(env, pygame.mouse.get_pos()))
+                if added_player is not None:
+                    selected_player = added_player
                 observations = env.observations()
+            elif event.type == pygame.KEYDOWN and editing and event.key in (pygame.K_DELETE, pygame.K_BACKSPACE):
+                if selected_player is not None and remove_player(env, selected_player):
+                    selected_player = None
+                    observations = env.observations()
+            elif event.type == pygame.KEYDOWN and editing and event.key == pygame.K_s:
+                starting_setup = capture_setup(env)
+                save_setup(starting_setup, args.scenario)
+            elif event.type == pygame.KEYDOWN and editing and event.key == pygame.K_l:
+                if Path(args.scenario).exists():
+                    starting_setup = load_setup(args.scenario)
+                    observations = restore_setup(env, starting_setup)
+                    selected_player = None
+                    accumulated_time = 0.0
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE and not editing:
                 paused = not paused
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                observations = restore_setup(env, starting_setup, current_seed)
-                editing = False
-                paused = False
+                observations = restore_setup(env, starting_setup)
+                editing = not model_compatible(model, env)
+                paused = editing
+                selected_player = None
                 accumulated_time = 0.0
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_n:
                 current_seed += 1
                 observations = env.reset(current_seed)
                 starting_setup = capture_setup(env)
-                editing = False
-                paused = False
+                editing = not model_compatible(model, env)
+                paused = editing
+                selected_player = None
                 accumulated_time = 0.0
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and editing:
-                for number in env.attacker_ids:
+                selected_player = None
+                for number in reversed(tuple(env.players)):
                     center = screen_position(env, env.players[number].position)
                     if (event.pos[0] - center[0]) ** 2 + (event.pos[1] - center[1]) ** 2 <= 18 ** 2:
                         selected_player = number
                         break
-            elif event.type == pygame.MOUSEMOTION and selected_player is not None:
+            elif (
+                event.type == pygame.MOUSEMOTION
+                and selected_player is not None
+                and event.buttons[0]
+            ):
                 env.players[selected_player].position[:] = pitch_position(env, event.pos)
                 if env.ball.owner == selected_player:
                     env.ball.position = env.players[selected_player].position.copy()
                 observations = env.observations()
-            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                selected_player = None
             elif event.type == pygame.KEYDOWN and event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                 speed_index = max(0, speed_index - 1)
             elif event.type == pygame.KEYDOWN and event.key in (
@@ -237,6 +312,7 @@ def main():
             current_seed,
             editing,
             selected_player,
+            model.body[0].in_features,
         )
         pygame.display.flip()
 

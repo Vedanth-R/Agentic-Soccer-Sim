@@ -1,6 +1,6 @@
 """The shared neural network and its PPO training loop.
 
-All three attackers use this one network. Each attacker gives it a different
+All attackers use this one network. Each attacker gives it a different
 observation, so they can still choose different actions.
 """
 
@@ -15,7 +15,7 @@ from torch.distributions import Categorical
 class SharedPolicy(nn.Module):
     """Two small hidden layers followed by an actor and a critic."""
 
-    def __init__(self, observation_size=16, action_count=9):
+    def __init__(self, observation_size=41, action_count=9):
         super().__init__()
         self.body = nn.Sequential(
             nn.Linear(observation_size, 64),
@@ -64,7 +64,7 @@ def train(
     filename="artifacts/swarm.pt",
     model=None,
 ):
-    """Train one policy from experience collected by all three attackers."""
+    """Train one policy from experience collected by every attacker."""
 
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -73,16 +73,17 @@ def train(
     model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
     observations = env.reset(seed)
+    agent_count = len(env.attacker_ids)
     episode_number = 0
     successes = 0
 
     # PPO learns from one rollout at a time.
     for rollout_start in range(0, total_steps, 1024):
         count = min(1024, total_steps - rollout_start)
-        saved_observations = np.zeros((count, 3, env.observation_size), np.float32)
-        saved_actions = np.zeros((count, 3), np.int64)
-        saved_log_probs = np.zeros((count, 3), np.float32)
-        saved_values = np.zeros((count, 3), np.float32)
+        saved_observations = np.zeros((count, agent_count, env.observation_size), np.float32)
+        saved_actions = np.zeros((count, agent_count), np.int64)
+        saved_log_probs = np.zeros((count, agent_count), np.float32)
+        saved_values = np.zeros((count, agent_count), np.float32)
         saved_rewards = np.zeros(count, np.float32)
         saved_dones = np.zeros(count, np.float32)
 
@@ -131,7 +132,7 @@ def _advantages(rewards, values, dones, next_values):
     """Estimate how much better each action was than the critic expected."""
 
     result = np.zeros_like(values)
-    advantage = np.zeros(3, np.float32)
+    advantage = np.zeros(values.shape[1], np.float32)
     for step in reversed(range(len(rewards))):
         continuing = 1.0 - dones[step]
         following_value = next_values if step == len(rewards) - 1 else values[step + 1]
