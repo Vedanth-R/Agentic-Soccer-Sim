@@ -300,7 +300,8 @@ def main():
         if not paused and not editing and env.result == "running":
             accumulated_time += real_seconds * speeds[speed_index]
             while accumulated_time >= 1 / env.ticks_per_second:
-                observations, _, _, _ = env.step(model_actions(model, observations))
+                actions = model_actions(model, observations, env.action_masks())
+                observations, _, _, _ = env.step(actions)
                 accumulated_time -= 1 / env.ticks_per_second
 
         draw(

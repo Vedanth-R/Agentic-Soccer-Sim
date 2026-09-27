@@ -15,7 +15,7 @@ from torch.distributions import Categorical
 class SharedPolicy(nn.Module):
     """Two small hidden layers followed by an actor and a critic."""
 
-    def __init__(self, observation_size=41, action_count=9):
+    def __init__(self, observation_size=48, action_count=13):
         super().__init__()
         self.body = nn.Sequential(
             nn.Linear(observation_size, 64),
@@ -30,8 +30,10 @@ class SharedPolicy(nn.Module):
         features = self.body(observations)
         return self.actor(features), self.critic(features).squeeze(-1)
 
-    def choose(self, observations, actions=None):
+    def choose(self, observations, actions=None, masks=None):
         logits, values = self(observations)
+        if masks is not None:
+            logits = logits.masked_fill(~masks, -1e9)
         choices = Categorical(logits=logits)
         actions = choices.sample() if actions is None else actions
         return actions, choices.log_prob(actions), choices.entropy(), values
@@ -84,18 +86,24 @@ def train(
         saved_actions = np.zeros((count, agent_count), np.int64)
         saved_log_probs = np.zeros((count, agent_count), np.float32)
         saved_values = np.zeros((count, agent_count), np.float32)
+        saved_masks = np.zeros((count, agent_count, env.action_count), bool)
         saved_rewards = np.zeros(count, np.float32)
         saved_dones = np.zeros(count, np.float32)
 
         for step in range(count):
             saved_observations[step] = observations
+            masks = env.action_masks()
             with torch.no_grad():
-                actions, log_probs, _, values = model.choose(torch.from_numpy(observations))
+                actions, log_probs, _, values = model.choose(
+                    torch.from_numpy(observations),
+                    masks=torch.from_numpy(masks),
+                )
 
             observations, reward, done, result = env.step(actions.numpy())
             saved_actions[step] = actions.numpy()
             saved_log_probs[step] = log_probs.numpy()
             saved_values[step] = values.numpy()
+            saved_masks[step] = masks
             saved_rewards[step] = reward
             saved_dones[step] = done
 
@@ -117,6 +125,7 @@ def train(
             saved_observations.reshape(-1, env.observation_size),
             saved_actions.reshape(-1),
             saved_log_probs.reshape(-1),
+            saved_masks.reshape(-1, env.action_count),
             advantages.reshape(-1),
             returns.reshape(-1),
         )
@@ -142,10 +151,11 @@ def _advantages(rewards, values, dones, next_values):
     return result
 
 
-def _ppo_update(model, optimizer, observations, actions, old_logs, advantages, returns):
+def _ppo_update(model, optimizer, observations, actions, old_logs, masks, advantages, returns):
     observations = torch.from_numpy(observations)
     actions = torch.from_numpy(actions)
     old_logs = torch.from_numpy(old_logs)
+    masks = torch.from_numpy(masks)
     advantages = torch.from_numpy(advantages)
     returns = torch.from_numpy(returns)
     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -155,7 +165,9 @@ def _ppo_update(model, optimizer, observations, actions, old_logs, advantages, r
         np.random.shuffle(indices)
         for start in range(0, len(indices), 512):
             batch = indices[start : start + 512]
-            _, new_logs, entropy, values = model.choose(observations[batch], actions[batch])
+            _, new_logs, entropy, values = model.choose(
+                observations[batch], actions[batch], masks[batch]
+            )
             probability_change = (new_logs - old_logs[batch]).exp()
             normal_gain = probability_change * advantages[batch]
             clipped_gain = torch.clamp(probability_change, 0.8, 1.2) * advantages[batch]

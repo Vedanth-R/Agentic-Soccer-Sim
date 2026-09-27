@@ -24,7 +24,20 @@ class Action(IntEnum):
     SHOOT = 5
     UP_RIGHT = 6
     DOWN_RIGHT = 7
-    PASS = 8
+    PASS_1 = 8
+    PASS_2 = 9
+    PASS_3 = 10
+    PASS_4 = 11
+    PASS_5 = 12
+
+
+PASS_ACTIONS = {
+    Action.PASS_1,
+    Action.PASS_2,
+    Action.PASS_3,
+    Action.PASS_4,
+    Action.PASS_5,
+}
 
 
 MOVEMENT = {
@@ -73,10 +86,10 @@ class SwarmSoccer:
     shooting_x = 72.0
     ticks_per_second = 10
     max_ticks = 400
-    action_count = 9
+    action_count = 13
     max_attackers = 6
     max_defenders = 6
-    observation_size = 41
+    observation_size = 48
 
     def __init__(
         self,
@@ -196,6 +209,13 @@ class SwarmSoccer:
         self.pass_start_x = 0.0
         self.rewarded_passes = 0
         self.completed_pass = False
+        self.pass_attempts = 0
+        self.completed_passes = 0
+        self.forward_passes = 0
+        self.pass_turnovers = 0
+        self.receiver_move_metres = 0.0
+        self.possession_contributors = {owner}
+        self.goal_after_pass = False
         return self.observations()
 
     def step(self, action_ids):
@@ -207,9 +227,17 @@ class SwarmSoccer:
             return self.observations(), 0.0, True, self.result
 
         actions = [Action(int(value)) for value in action_ids]
+        masks = self.action_masks()
+        for index, action in enumerate(actions):
+            if not masks[index, int(action)]:
+                raise ValueError(
+                    f"Action {action.name} is not available to attacker "
+                    f"{self.attacker_ids[index]}"
+                )
         old_ball_x = self.ball.position[0]
         old_owner = self.ball.owner
         old_support = self._support_score()
+        pass_target = self._selected_pass_target(old_owner, actions)
 
         # If a pass is already travelling, measure whether its receiver moves
         # toward where the ball will be next. This isolates the receiver's
@@ -237,13 +265,14 @@ class SwarmSoccer:
             receiver_move = float(
                 np.clip(old_receiver_distance - new_receiver_distance, 0.0, 0.7)
             )
+            self.receiver_move_metres += receiver_move
         self._tackle_if_close()
 
         premature_shot = False
         if self.ball.owner in self.attacker_ids:
             owner_action = actions[self.attacker_ids.index(self.ball.owner)]
             premature_shot = owner_action == Action.SHOOT and self.ball.position[0] < self.shooting_x
-        useful_pass_started = self._kick_ball(actions)
+        useful_pass_started = self._kick_ball(actions, pass_target)
         self._move_ball()
         self._collect_loose_ball()
 
@@ -271,22 +300,24 @@ class SwarmSoccer:
                 forward_metres = self.players[self.ball.owner].position[0] - self.pass_start_x
                 reward += 0.6 + min(0.02 * forward_metres, 0.4)
                 self.rewarded_passes += 1
+            if self.completed_pass:
+                self.completed_passes += 1
+                self.possession_contributors.add(self.ball.owner)
+            if self.completed_pass and forward_pass:
+                self.forward_passes += 1
             self.passer = None
-
-        if old_owner in self.attacker_ids and self.ball.owner is None:
-            old_action = actions[self.attacker_ids.index(old_owner)]
-            if old_action == Action.PASS:
-                self.passer = old_owner
-                self.pass_start_x = self.players[old_owner].position[0]
 
         if self._is_goal():
             self.result = "success"
+            self.goal_after_pass = self.completed_passes > 0
             reward += 20.0
         elif self.ball.owner in self.defender_ids:
             self.result = "turnover"
+            self.pass_turnovers += self.passer is not None
             reward -= 10.0
         elif self._ball_is_out():
             self.result = "out"
+            self.pass_turnovers += self.passer is not None
             reward -= 10.0
         elif self.tick >= self.max_ticks:
             self.result = "timeout"
@@ -297,12 +328,41 @@ class SwarmSoccer:
     def observations(self):
         return np.stack([self._observation(number) for number in self.attacker_ids])
 
-    def _observation(self, number):
+    def action_masks(self):
+        """Return which discrete actions are meaningful for each attacker."""
+
+        masks = np.zeros((self.num_attackers, self.action_count), dtype=bool)
+        masks[:, :5] = True  # Hold and four cardinal movement actions.
+        masks[:, int(Action.UP_RIGHT)] = True
+        masks[:, int(Action.DOWN_RIGHT)] = True
+        if self.ball.owner in self.attacker_ids:
+            owner_index = self.attacker_ids.index(self.ball.owner)
+            owner = self.players[self.ball.owner]
+            masks[owner_index, int(Action.SHOOT)] = owner.position[0] >= self.shooting_x
+            teammate_count = len(self._teammates_for(self.ball.owner))
+            masks[owner_index, int(Action.PASS_1) : int(Action.PASS_1) + teammate_count] = True
+        return masks
+
+    def _teammates_for(self, number):
         player = self.players[number]
-        teammates = sorted(
+        return sorted(
             (self.players[n] for n in self.attacker_ids if n != number),
             key=lambda other: (distance(player.position, other.position), other.number),
         )
+
+    def _selected_pass_target(self, owner, actions):
+        if owner not in self.attacker_ids:
+            return None
+        action = actions[self.attacker_ids.index(owner)]
+        if action not in PASS_ACTIONS:
+            return None
+        slot = int(action) - int(Action.PASS_1)
+        teammates = self._teammates_for(owner)
+        return teammates[slot].number if slot < len(teammates) else None
+
+    def _observation(self, number):
+        player = self.players[number]
+        teammates = self._teammates_for(number)
         defenders = sorted(
             (self.players[n] for n in self.defender_ids),
             key=lambda other: (distance(player.position, other.position), other.number),
@@ -316,6 +376,14 @@ class SwarmSoccer:
             (self.goal_center_y - player.position[1]) / self.height,
             1.0 if self.ball.owner == number else -1.0,
             1.0 if self.ball.owner in self.attacker_ids else -1.0,
+            self.ball.velocity[0] / 24.0,
+            self.ball.velocity[1] / 24.0,
+            1.0 if self.ball.owner is None else -1.0,
+            1.0 if self.ball.intended_receiver == number else -1.0,
+            self._distance_to_ball_path(player.position),
+            min(distance(player.position, defender.position) for defender in defenders)
+            / np.hypot(self.width, self.height),
+            1.0 if self._has_open_pass(number) else -1.0,
         ]
         for other in teammates:
             values.extend(
@@ -336,6 +404,27 @@ class SwarmSoccer:
             )
         values.extend([0.0, 0.0, 0.0] * (self.max_defenders - len(defenders)))
         return np.clip(np.array(values, np.float32), -1, 1)
+
+    def _distance_to_ball_path(self, position):
+        if self.ball.owner is not None or np.linalg.norm(self.ball.velocity) == 0:
+            path_distance = distance(position, self.ball.position)
+        else:
+            path_end = self.ball.position + self.ball.velocity * 1.5
+            path_distance = point_to_segment(position, self.ball.position, path_end)
+        return path_distance / np.hypot(self.width, self.height)
+
+    def _has_open_pass(self, number):
+        if self.ball.owner != number:
+            return False
+        start = self.players[number].position
+        return any(
+            min(
+                point_to_segment(self.players[d].position, start, teammate.position)
+                for d in self.defender_ids
+            )
+            >= 2.5
+            for teammate in self._teammates_for(number)
+        )
 
     def _support_score(self):
         """Measure safe forward passing options; changes matter, not its raw value."""
@@ -389,15 +478,13 @@ class SwarmSoccer:
             self.ball.velocity[:] = 0
             self.ball.possession_ticks = 0
 
-    def _kick_ball(self, actions):
+    def _kick_ball(self, actions, pass_target):
         owner = self.ball.owner
         if owner not in self.attacker_ids:
             return False
         action = actions[self.attacker_ids.index(owner)]
-        if action == Action.PASS:
-            teammates = [self.players[n] for n in self.attacker_ids if n != owner]
-            ahead = [player for player in teammates if player.position[0] > self.players[owner].position[0]]
-            receiver = max(ahead or teammates, key=lambda player: player.position[0])
+        if action in PASS_ACTIONS and pass_target in self.attacker_ids:
+            receiver = self.players[pass_target]
             # Aim once at where the receiver is currently running. The ball
             # keeps this direction after the kick; it never homes or curves.
             travel_time = distance(self.ball.position, receiver.position) / 20.0
@@ -409,6 +496,9 @@ class SwarmSoccer:
                 point_to_segment(self.players[d].position, self.ball.position, target)
                 for d in self.defender_ids
             ) >= 2.5
+            self.pass_attempts += 1
+            self.passer = owner
+            self.pass_start_x = self.players[owner].position[0]
             self._start_kick(target, receiver.number, speed=24.0)
             return forward_pass and open_lane
         elif action == Action.SHOOT and self.players[owner].position[0] >= self.shooting_x:
@@ -502,6 +592,38 @@ def point_to_segment(point, start, end):
     return distance(point, start + amount * segment)
 
 
+class PassingDrill(SwarmSoccer):
+    """A short episode devoted only to passing and receiving."""
+
+    def __init__(self, pressure=False, **kwargs):
+        self.pressure = pressure
+        super().__init__(
+            num_attackers=2,
+            num_defenders=1,
+            defender_speed=0.35 if pressure else 0.0,
+            starting_jitter=4.0,
+            max_ticks=120,
+            **kwargs,
+        )
+
+    def _starting_positions(self):
+        defender_position = (52.0, 18.0) if self.pressure else (90.0, 5.0)
+        return {1: (35.0, 27.0), 2: (57.0, 42.0), 3: defender_position}
+
+    def reset(self, seed=0):
+        super().reset(seed)
+        return self._begin_episode(self.attacker_ids[0])
+
+    def step(self, action_ids):
+        observations, reward, done, result = super().step(action_ids)
+        if self.completed_pass and self.result == "running":
+            self.result = "success"
+            reward += 5.0
+            done = True
+            result = self.result
+        return observations, reward, done, result
+
+
 class Swarm3v2(SwarmSoccer):
     """The original training environment and checkpoint-compatible roster."""
 
@@ -509,9 +631,10 @@ class Swarm3v2(SwarmSoccer):
         super().__init__(num_attackers=3, num_defenders=2, **kwargs)
 
 
-def model_actions(model, observations):
+def model_actions(model, observations, masks):
     with torch.no_grad():
         logits, _ = model(torch.from_numpy(observations))
+        logits = logits.masked_fill(~torch.from_numpy(masks), -1e9)
     return torch.argmax(logits, dim=-1).numpy()
 
 
@@ -523,7 +646,8 @@ def goal_rate(model, env_factory=Swarm3v2, episodes=100, first_seed=30_000):
         env = env_factory()
         observations = env.reset(seed)
         while env.result == "running":
-            observations, _, _, result = env.step(model_actions(model, observations))
+            actions = model_actions(model, observations, env.action_masks())
+            observations, _, _, result = env.step(actions)
         goals += result == "success"
     return goals / episodes
 
@@ -536,20 +660,35 @@ def _evaluate_actions(
     env_factory=Swarm3v2,
 ):
     outcomes = {"success": 0, "turnover": 0, "out": 0, "timeout": 0}
-    passes = 0
+    pass_attempts = 0
+    completed_passes = 0
+    forward_passes = 0
+    pass_turnovers = 0
+    goals_after_pass = 0
+    receiver_movement = 0.0
     for seed in range(first_seed, first_seed + episodes):
         env = env_factory()
         observations = env.reset(seed)
         while env.result == "running":
             actions = choose_actions(env, observations)
             observations, _, _, _ = env.step(actions)
-            passes += env.completed_pass
         outcomes[env.result] += 1
+        pass_attempts += env.pass_attempts
+        completed_passes += env.completed_passes
+        forward_passes += env.forward_passes
+        pass_turnovers += env.pass_turnovers
+        goals_after_pass += env.goal_after_pass
+        receiver_movement += env.receiver_move_metres
+    completion_rate = completed_passes / max(pass_attempts, 1)
     print(
         f"{name}: goals={outcomes['success'] / episodes:.1%} "
         f"turnovers={outcomes['turnover'] / episodes:.1%} "
         f"out={outcomes['out'] / episodes:.1%} timeouts={outcomes['timeout'] / episodes:.1%} "
-        f"passes_per_episode={passes / episodes:.2f}"
+        f"pass_attempts={pass_attempts / episodes:.2f} "
+        f"pass_completion={completion_rate:.1%} forward_passes={forward_passes / episodes:.2f} "
+        f"pass_turnovers={pass_turnovers / episodes:.2f} "
+        f"goals_after_pass={goals_after_pass / episodes:.1%} "
+        f"receiver_movement={receiver_movement / episodes:.2f}m"
     )
 
 
@@ -558,13 +697,13 @@ def evaluate(model, episodes=200, first_seed=20_000):
 
     _evaluate_actions(
         "learned policy",
-        lambda env, observations: model_actions(model, observations),
+        lambda env, observations: model_actions(model, observations, env.action_masks()),
         episodes,
         first_seed,
     )
 
     def freeze_off_ball(env, observations):
-        actions = model_actions(model, observations)
+        actions = model_actions(model, observations, env.action_masks())
         for index, number in enumerate(env.attacker_ids):
             if number != env.ball.owner:
                 actions[index] = Action.HOLD
@@ -586,7 +725,7 @@ def evaluate(model, episodes=200, first_seed=20_000):
         make_env = lambda a=attackers, d=defenders: SwarmSoccer(a, d)
         _evaluate_actions(
             f"learned policy {attackers}v{defenders}",
-            lambda env, observations: model_actions(model, observations),
+            lambda env, observations: model_actions(model, observations, env.action_masks()),
             episodes,
             first_seed,
             make_env,
@@ -620,15 +759,31 @@ def main():
             candidates.append((rate, stage_name, state))
             print(f"held-out full-3v2 goal rate after {stage_name}: {rate:.1%}")
 
-        print("stage 1/3: learn to approach and shoot")
+        print("stage 1/5: learn an unpressured pass and reception")
+        model = train(
+            PassingDrill(pressure=False),
+            120_000,
+            seed=1,
+            filename=args.model,
+        )
+        print("stage 2/5: receive passes with a slow defender")
+        model = train(
+            PassingDrill(pressure=True),
+            180_000,
+            seed=2_000,
+            filename=args.model,
+            model=model,
+        )
+        print("stage 3/5: learn to approach and shoot")
         model = train(
             Swarm3v2(starting_jitter=4, defender_speed=0, attacker_x_offset=25, max_ticks=200),
             150_000,
             seed=4,
             filename=args.model,
+            model=model,
         )
-        remember_stage("stage 1", model)
-        print("stage 2/3: add distance and moderate pressure")
+        remember_stage("stage 3", model)
+        print("stage 4/5: add distance and moderate pressure")
         model = train(
             Swarm3v2(starting_jitter=6, defender_speed=0.65, attacker_x_offset=12, max_ticks=300),
             300_000,
@@ -636,8 +791,8 @@ def main():
             filename=args.model,
             model=model,
         )
-        remember_stage("stage 2", model)
-        print("stage 3/3: train the complete 3v2")
+        remember_stage("stage 4", model)
+        print("stage 5/5: train the complete 3v2")
         model = train(
             Swarm3v2(),
             args.steps,
@@ -645,7 +800,7 @@ def main():
             filename=args.model,
             model=model,
         )
-        remember_stage("stage 3", model)
+        remember_stage("stage 5", model)
         best_rate, best_stage, best_state = max(candidates, key=lambda candidate: candidate[0])
         model.load_state_dict(best_state)
         save_model(model, args.model)

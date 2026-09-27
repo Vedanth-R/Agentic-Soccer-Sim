@@ -46,10 +46,18 @@ python pygame_visualizer.py --attackers 6 --defenders 4
 
 The simulator, scripted defenders, editor, JSON scenarios, PPO data collection,
 and trained model support two to six attackers and one to six defenders. Each
-agent always receives 41 inputs: its own situation plus five teammate slots
+agent always receives 48 inputs: its own situation plus five teammate slots
 and six defender slots. Players are ordered by distance; missing slots contain
-zeros and an existence mask. This fixed format lets the same feed-forward
-network run different roster sizes without changing PPO or the network layers.
+zeros and an existence mask. Observations also include ball velocity, whether
+the ball is loose, whether the agent is the intended receiver, distance from
+the ball path and nearest defender, and whether an open pass exists. This fixed
+format lets the same feed-forward network run different roster sizes without
+changing PPO or the network layers.
+
+The policy has 13 discrete actions: seven movement/hold actions, shoot, and
+five pass-target actions corresponding to the five teammate slots. Action
+masking prevents off-ball shooting or passing, early shooting, and passes to
+empty teammate slots.
 
 The checkpoint has only trained in 3v2. Larger layouts and custom positions are
 therefore tests of generalization, not situations it has already learned.
@@ -75,20 +83,29 @@ Evaluation uses 200 held-out layouts and reports:
 - A direct run-and-shoot strategy
 - Zero-shot performance in 5v4 and 6v4
 
+For each strategy it measures goals, outcome types, pass attempts, completion
+rate, forward passes, pass-caused turnovers, goals after a pass, and receiver
+movement toward the ball.
+
 Current checkpoint results:
 
 | Strategy | Goals | Turnovers | Completed passes per episode |
 |---|---:|---:|---:|
-| Learned policy, 3v2 | 30.0% | 58.0% | 0.00 |
-| Off-ball players frozen, 3v2 | 24.5% | 73.5% | 0.00 |
+| Learned policy, 3v2 | 88.5% | 1.5% | 0.77 |
+| Off-ball players frozen, 3v2 | 96.5% | 3.5% | 0.96 |
 | Direct run and shoot | 35.5% | 64.5% | 0.00 |
-| Learned policy, 5v4 zero-shot | 1.0% | 97.5% | 0.00 |
+| Learned policy, 5v4 zero-shot | 39.0% | 25.0% | 7.46 |
 | Direct run and shoot, 5v4 | 12.5% | 87.5% | 0.00 |
-| Learned policy, 6v4 zero-shot | 2.0% | 96.0% | 0.01 |
+| Learned policy, 6v4 zero-shot | 30.0% | 32.0% | 8.41 |
 | Direct run and shoot, 6v4 | 13.0% | 87.0% | 0.00 |
 
-The common input format works, but the results show that behavior learned only
-in 3v2 does not yet generalize well to larger teams.
+The learned policy completes 86.9% of attempted passes in 3v2, and 59.5% of
+episodes end with a goal after a pass. Larger-roster results are zero-shot: the
+checkpoint never trained in 5v4 or 6v4.
+
+The frozen-player ablation exposes the next weakness. Stationary off-ball
+players currently score more often than the full policy, so passing has been
+learned but active off-ball movement is not consistently useful yet.
 
 
 ## Train
@@ -97,11 +114,13 @@ in 3v2 does not yet generalize well to larger teams.
 python swarm_3v2.py --train
 ```
 
-Training uses a three-stage curriculum:
+Training uses a five-stage curriculum:
 
-1. Learn to approach and shoot near goal with stationary defenders.
-2. Start farther from goal against moderately fast defenders.
-3. Train on the complete 3v2 with broader layouts and stronger defenders.
+1. Learn passing and receiving without pressure.
+2. Receive passes against a slow defender.
+3. Learn to approach and shoot near goal with stationary defenders.
+4. Start farther from goal against moderately fast defenders.
+5. Train on the complete 3v2 with broader layouts and stronger defenders.
 
 The final stage uses 700,000 simulation steps by default. Change only that
 stage's budget with, for example:
