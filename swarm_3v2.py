@@ -90,6 +90,8 @@ class SwarmSoccer:
     max_attackers = 6
     max_defenders = 6
     observation_size = 48
+    global_state_size = 78
+    critic_observation_size = global_state_size + observation_size
 
     def __init__(
         self,
@@ -327,6 +329,45 @@ class SwarmSoccer:
 
     def observations(self):
         return np.stack([self._observation(number) for number in self.attacker_ids])
+
+    def critic_observations(self):
+        """Give MAPPO's critic the full world plus each agent's local view."""
+
+        global_state = self._global_state()
+        return np.stack(
+            [
+                np.concatenate((global_state, self._observation(number)))
+                for number in self.attacker_ids
+            ]
+        ).astype(np.float32)
+
+    def _global_state(self):
+        values = [
+            2 * self.ball.position[0] / self.width - 1,
+            2 * self.ball.position[1] / self.height - 1,
+            self.ball.velocity[0] / 24.0,
+            self.ball.velocity[1] / 24.0,
+            1.0 if self.ball.owner is None else -1.0,
+            1.0 if self.ball.owner in self.attacker_ids else -1.0,
+        ]
+        for team_ids, maximum in (
+            (self.attacker_ids, self.max_attackers),
+            (self.defender_ids, self.max_defenders),
+        ):
+            for number in team_ids:
+                player = self.players[number]
+                values.extend(
+                    [
+                        2 * player.position[0] / self.width - 1,
+                        2 * player.position[1] / self.height - 1,
+                        player.velocity[0] / 7.0,
+                        player.velocity[1] / 7.0,
+                        1.0 if player.has_ball else -1.0,
+                        1.0,
+                    ]
+                )
+            values.extend([0.0] * 6 * (maximum - len(team_ids)))
+        return np.clip(np.array(values, np.float32), -1, 1)
 
     def action_masks(self):
         """Return which discrete actions are meaningful for each attacker."""

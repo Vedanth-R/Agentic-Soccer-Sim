@@ -1,8 +1,8 @@
 # PitchLab: Soccer Swarm
 
-PitchLab trains soccer agents that share one PyTorch neural network. The
-current checkpoint is trained in 3v2, then evaluated without further training
-in 5v4 and 6v4 to measure zero-shot transfer.
+PitchLab trains soccer agents with Multi-Agent Proximal Policy Optimization
+(MAPPO). The current checkpoint is trained in 3v2, then evaluated without
+further training in 5v4 and 6v4 to measure zero-shot transfer.
 
 The nearest defender presses the ball while the second defender marks a
 forward attacker. The attackers make separate decisions because each receives
@@ -62,6 +62,12 @@ empty teammate slots.
 The checkpoint has only trained in 3v2. Larger layouts and custom positions are
 therefore tests of generalization, not situations it has already learned.
 
+During training, every agent's shared actor sees only its own 48-value local
+observation. A separate centralized critic receives the complete padded world
+state plus that agent's local observation (126 values total). The Pygame
+simulation uses only the decentralized actor. The earlier shared-PPO model is
+preserved at `artifacts/shared_ppo_baseline.pt` for comparison.
+
 ```bash
 python pygame_visualizer.py --seed 20025
 python pygame_visualizer.py --jitter 12
@@ -87,25 +93,29 @@ For each strategy it measures goals, outcome types, pass attempts, completion
 rate, forward passes, pass-caused turnovers, goals after a pass, and receiver
 movement toward the ball.
 
-Current checkpoint results:
+Current MAPPO checkpoint results:
 
 | Strategy | Goals | Turnovers | Completed passes per episode |
 |---|---:|---:|---:|
-| Learned policy, 3v2 | 88.5% | 1.5% | 0.77 |
-| Off-ball players frozen, 3v2 | 96.5% | 3.5% | 0.96 |
+| Learned policy, 3v2 | 69.5% | 30.5% | 0.00 |
+| Off-ball players frozen, 3v2 | 65.0% | 35.0% | 0.00 |
 | Direct run and shoot | 35.5% | 64.5% | 0.00 |
-| Learned policy, 5v4 zero-shot | 39.0% | 25.0% | 7.46 |
+| Learned policy, 5v4 zero-shot | 38.0% | 62.0% | 0.00 |
 | Direct run and shoot, 5v4 | 12.5% | 87.5% | 0.00 |
-| Learned policy, 6v4 zero-shot | 30.0% | 32.0% | 8.41 |
+| Learned policy, 6v4 zero-shot | 37.5% | 62.5% | 0.00 |
 | Direct run and shoot, 6v4 | 13.0% | 87.0% | 0.00 |
 
-The learned policy completes 86.9% of attempted passes in 3v2, and 59.5% of
-episodes end with a goal after a pass. Larger-roster results are zero-shot: the
-checkpoint never trained in 5v4 or 6v4.
+Compared with the shared-PPO baseline, MAPPO improved 6v4 goals from 30.0% to
+37.5%. Freezing off-ball players now reduces 3v2 goals from 69.5% to 65.0%, so
+the learned movement provides some value. However, MAPPO stopped choosing pass
+actions and its 3v2 goal rate is below the baseline's 88.5%. This is a mixed
+experimental result rather than evidence that MAPPO is universally better.
 
-The frozen-player ablation exposes the next weakness. Stationary off-ball
-players currently score more often than the full policy, so passing has been
-learned but active off-ball movement is not consistently useful yet.
+Run the preserved baseline through the same evaluator with:
+
+```bash
+python swarm_3v2.py --model artifacts/shared_ppo_baseline.pt
+```
 
 
 ## Train

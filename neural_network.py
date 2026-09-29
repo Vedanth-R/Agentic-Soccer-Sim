@@ -13,10 +13,11 @@ from torch.distributions import Categorical
 
 
 class SharedPolicy(nn.Module):
-    """Two small hidden layers followed by an actor and a critic."""
+    """A decentralized actor and a centralized MAPPO critic."""
 
-    def __init__(self, observation_size=48, action_count=13):
+    def __init__(self, observation_size=48, action_count=13, critic_observation_size=126):
         super().__init__()
+        self.critic_observation_size = critic_observation_size
         self.body = nn.Sequential(
             nn.Linear(observation_size, 64),
             nn.Tanh(),
@@ -24,19 +25,50 @@ class SharedPolicy(nn.Module):
             nn.Tanh(),
         )
         self.actor = nn.Linear(64, action_count)  # Which action should I take?
-        self.critic = nn.Linear(64, 1)  # How promising is this situation?
+        self.critic_body = nn.Sequential(
+            nn.Linear(critic_observation_size, 64),
+            nn.Tanh(),
+            nn.Linear(64, 64),
+            nn.Tanh(),
+        )
+        self.critic = nn.Linear(64, 1)  # How promising is the full situation?
 
-    def forward(self, observations):
+    def forward(self, observations, critic_observations=None):
         features = self.body(observations)
-        return self.actor(features), self.critic(features).squeeze(-1)
+        logits = self.actor(features)
+        if critic_observations is None:
+            values = torch.zeros(observations.shape[:-1], device=observations.device)
+        else:
+            critic_features = self.critic_body(critic_observations)
+            values = self.critic(critic_features).squeeze(-1)
+        return logits, values
 
-    def choose(self, observations, actions=None, masks=None):
-        logits, values = self(observations)
+    def choose(self, observations, actions=None, masks=None, critic_observations=None):
+        logits, values = self(observations, critic_observations)
         if masks is not None:
             logits = logits.masked_fill(~masks, -1e9)
         choices = Categorical(logits=logits)
         actions = choices.sample() if actions is None else actions
         return actions, choices.log_prob(actions), choices.entropy(), values
+
+
+class LegacySharedPolicy(nn.Module):
+    """Load the saved pre-MAPPO baseline for comparison only."""
+
+    def __init__(self, observation_size, action_count):
+        super().__init__()
+        self.body = nn.Sequential(
+            nn.Linear(observation_size, 64),
+            nn.Tanh(),
+            nn.Linear(64, 64),
+            nn.Tanh(),
+        )
+        self.actor = nn.Linear(64, action_count)
+        self.critic = nn.Linear(64, 1)
+
+    def forward(self, observations):
+        features = self.body(observations)
+        return self.actor(features), self.critic(features).squeeze(-1)
 
 
 def save_model(model, filename="artifacts/swarm.pt"):
@@ -46,6 +78,7 @@ def save_model(model, filename="artifacts/swarm.pt"):
         {
             "observation_size": int(model.body[0].in_features),
             "action_size": int(model.actor.out_features),
+            "critic_observation_size": model.critic_observation_size,
             "state_dict": model.state_dict(),
         },
         path,
@@ -54,7 +87,14 @@ def save_model(model, filename="artifacts/swarm.pt"):
 
 def load_model(filename="artifacts/swarm.pt"):
     checkpoint = torch.load(filename, map_location="cpu", weights_only=True)
-    model = SharedPolicy(checkpoint["observation_size"], checkpoint["action_size"])
+    if "critic_observation_size" in checkpoint:
+        model = SharedPolicy(
+            checkpoint["observation_size"],
+            checkpoint["action_size"],
+            checkpoint["critic_observation_size"],
+        )
+    else:
+        model = LegacySharedPolicy(checkpoint["observation_size"], checkpoint["action_size"])
     model.load_state_dict(checkpoint["state_dict"])
     return model.eval()
 
@@ -71,7 +111,11 @@ def train(
     torch.manual_seed(seed)
     np.random.seed(seed)
     if model is None:
-        model = SharedPolicy(env.observation_size, env.action_count)
+        model = SharedPolicy(
+            env.observation_size,
+            env.action_count,
+            env.critic_observation_size,
+        )
     model.train()
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
     observations = env.reset(seed)
@@ -83,6 +127,9 @@ def train(
     for rollout_start in range(0, total_steps, 1024):
         count = min(1024, total_steps - rollout_start)
         saved_observations = np.zeros((count, agent_count, env.observation_size), np.float32)
+        saved_critic_observations = np.zeros(
+            (count, agent_count, env.critic_observation_size), np.float32
+        )
         saved_actions = np.zeros((count, agent_count), np.int64)
         saved_log_probs = np.zeros((count, agent_count), np.float32)
         saved_values = np.zeros((count, agent_count), np.float32)
@@ -92,11 +139,14 @@ def train(
 
         for step in range(count):
             saved_observations[step] = observations
+            critic_observations = env.critic_observations()
+            saved_critic_observations[step] = critic_observations
             masks = env.action_masks()
             with torch.no_grad():
                 actions, log_probs, _, values = model.choose(
                     torch.from_numpy(observations),
                     masks=torch.from_numpy(masks),
+                    critic_observations=torch.from_numpy(critic_observations),
                 )
 
             observations, reward, done, result = env.step(actions.numpy())
@@ -113,7 +163,10 @@ def train(
                 observations = env.reset(seed + episode_number)
 
         with torch.no_grad():
-            _, next_values = model(torch.from_numpy(observations))
+            _, next_values = model(
+                torch.from_numpy(observations),
+                torch.from_numpy(env.critic_observations()),
+            )
 
         advantages = _advantages(
             saved_rewards, saved_values, saved_dones, next_values.numpy()
@@ -123,6 +176,7 @@ def train(
             model,
             optimizer,
             saved_observations.reshape(-1, env.observation_size),
+            saved_critic_observations.reshape(-1, env.critic_observation_size),
             saved_actions.reshape(-1),
             saved_log_probs.reshape(-1),
             saved_masks.reshape(-1, env.action_count),
@@ -151,8 +205,19 @@ def _advantages(rewards, values, dones, next_values):
     return result
 
 
-def _ppo_update(model, optimizer, observations, actions, old_logs, masks, advantages, returns):
+def _ppo_update(
+    model,
+    optimizer,
+    observations,
+    critic_observations,
+    actions,
+    old_logs,
+    masks,
+    advantages,
+    returns,
+):
     observations = torch.from_numpy(observations)
+    critic_observations = torch.from_numpy(critic_observations)
     actions = torch.from_numpy(actions)
     old_logs = torch.from_numpy(old_logs)
     masks = torch.from_numpy(masks)
@@ -166,7 +231,10 @@ def _ppo_update(model, optimizer, observations, actions, old_logs, masks, advant
         for start in range(0, len(indices), 512):
             batch = indices[start : start + 512]
             _, new_logs, entropy, values = model.choose(
-                observations[batch], actions[batch], masks[batch]
+                observations[batch],
+                actions[batch],
+                masks[batch],
+                critic_observations[batch],
             )
             probability_change = (new_logs - old_logs[batch]).exp()
             normal_gain = probability_change * advantages[batch]
