@@ -15,7 +15,7 @@ from torch.distributions import Categorical
 class SharedPolicy(nn.Module):
     """A decentralized actor and a centralized MAPPO critic."""
 
-    def __init__(self, observation_size=48, action_count=13, critic_observation_size=126):
+    def __init__(self, observation_size=51, action_count=13, critic_observation_size=132):
         super().__init__()
         self.critic_observation_size = critic_observation_size
         self.body = nn.Sequential(
@@ -99,6 +99,31 @@ def load_model(filename="artifacts/swarm.pt"):
     return model.eval()
 
 
+def initialize_mappo_from_actor(
+    source,
+    observation_size=51,
+    action_count=13,
+    critic_observation_size=132,
+    seed=0,
+):
+    """Copy a trained actor into MAPPO while creating a fresh central critic."""
+
+    torch.manual_seed(seed)
+    model = SharedPolicy(observation_size, action_count, critic_observation_size)
+    source_inputs = source.body[0].in_features
+    if source_inputs > observation_size or source.actor.out_features != action_count:
+        raise ValueError("The source actor is incompatible with the requested MAPPO policy")
+    with torch.no_grad():
+        model.body[0].weight.zero_()
+        model.body[0].weight[:, :source_inputs].copy_(source.body[0].weight)
+        model.body[0].bias.copy_(source.body[0].bias)
+        model.body[2].weight.copy_(source.body[2].weight)
+        model.body[2].bias.copy_(source.body[2].bias)
+        model.actor.weight.copy_(source.actor.weight)
+        model.actor.bias.copy_(source.actor.bias)
+    return model
+
+
 def train(
     env,
     total_steps=500_000,
@@ -117,7 +142,10 @@ def train(
             env.critic_observation_size,
         )
     model.train()
-    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
+    optimizer = getattr(model, "_ppo_optimizer", None)
+    if optimizer is None:
+        optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
+        model._ppo_optimizer = optimizer
     observations = env.reset(seed)
     agent_count = len(env.attacker_ids)
     episode_number = 0

@@ -7,12 +7,13 @@ others mark forward attackers. The episode is won only by scoring a goal.
 import argparse
 from dataclasses import dataclass
 from enum import IntEnum
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import torch
 
-from neural_network import load_model, save_model, train
+from neural_network import initialize_mappo_from_actor, load_model, save_model, train
 
 
 class Action(IntEnum):
@@ -89,8 +90,8 @@ class SwarmSoccer:
     action_count = 13
     max_attackers = 6
     max_defenders = 6
-    observation_size = 48
-    global_state_size = 78
+    observation_size = 51
+    global_state_size = 81
     critic_observation_size = global_state_size + observation_size
 
     def __init__(
@@ -218,6 +219,7 @@ class SwarmSoccer:
         self.receiver_move_metres = 0.0
         self.possession_contributors = {owner}
         self.goal_after_pass = False
+        self.multi_attacker_goal = False
         return self.observations()
 
     def step(self, action_ids):
@@ -312,6 +314,7 @@ class SwarmSoccer:
         if self._is_goal():
             self.result = "success"
             self.goal_after_pass = self.completed_passes > 0
+            self.multi_attacker_goal = len(self.possession_contributors) >= 2
             reward += 20.0
         elif self.ball.owner in self.defender_ids:
             self.result = "turnover"
@@ -341,6 +344,11 @@ class SwarmSoccer:
             ]
         ).astype(np.float32)
 
+    def _scenario_vector(self):
+        """One-hot task label: easy pass, pressured pass, or full game."""
+
+        return [0.0, 0.0, 1.0]
+
     def _global_state(self):
         values = [
             2 * self.ball.position[0] / self.width - 1,
@@ -350,6 +358,7 @@ class SwarmSoccer:
             1.0 if self.ball.owner is None else -1.0,
             1.0 if self.ball.owner in self.attacker_ids else -1.0,
         ]
+        values.extend(self._scenario_vector())
         for team_ids, maximum in (
             (self.attacker_ids, self.max_attackers),
             (self.defender_ids, self.max_defenders),
@@ -444,6 +453,7 @@ class SwarmSoccer:
                 ]
             )
         values.extend([0.0, 0.0, 0.0] * (self.max_defenders - len(defenders)))
+        values.extend(self._scenario_vector())
         return np.clip(np.array(values, np.float32), -1, 1)
 
     def _distance_to_ball_path(self, position):
@@ -665,6 +675,53 @@ class PassingDrill(SwarmSoccer):
         return observations, reward, done, result
 
 
+class MixedTrainingEnv(SwarmSoccer):
+    """Always use 3v2, but sample passing and full-game objectives."""
+
+    scenarios = ("easy_pass", "pressured_pass", "full_game")
+
+    def __init__(self, weights=(0.2, 0.3, 0.5)):
+        self.weights = np.asarray(weights, dtype=float)
+        self.weights /= self.weights.sum()
+        self.scenario = "full_game"
+        super().__init__(num_attackers=3, num_defenders=2)
+
+    def _scenario_vector(self):
+        return [1.0 if self.scenario == name else 0.0 for name in self.scenarios]
+
+    def _starting_positions(self):
+        if self.scenario == "easy_pass":
+            return {1: (35, 27), 2: (57, 42), 3: (48, 55), 4: (90, 5), 5: (92, 63)}
+        if self.scenario == "pressured_pass":
+            return {1: (35, 27), 2: (57, 42), 3: (48, 55), 4: (52, 18), 5: (68, 50)}
+        return dict(THREE_V_TWO_POSITIONS)
+
+    def reset(self, seed=0):
+        rng = np.random.default_rng(seed)
+        self.scenario = str(rng.choice(self.scenarios, p=self.weights))
+        self.starting_positions = self._starting_positions()
+        self.starting_jitter = 4.0 if self.scenario != "full_game" else 8.0
+        if self.scenario == "easy_pass":
+            self.defender_speed = 0.0
+        elif self.scenario == "pressured_pass":
+            self.defender_speed = 0.35
+        else:
+            self.defender_speed = 0.90
+        observations = super().reset(seed)
+        if self.scenario != "full_game":
+            return self._begin_episode(self.attacker_ids[0])
+        return observations
+
+    def step(self, action_ids):
+        observations, reward, done, result = super().step(action_ids)
+        if self.scenario != "full_game" and self.forward_passes > 0 and self.result == "running":
+            self.result = "success"
+            reward += 5.0
+            done = True
+            result = self.result
+        return observations, reward, done, result
+
+
 class Swarm3v2(SwarmSoccer):
     """The original training environment and checkpoint-compatible roster."""
 
@@ -673,6 +730,8 @@ class Swarm3v2(SwarmSoccer):
 
 
 def model_actions(model, observations, masks):
+    expected_inputs = model.body[0].in_features
+    observations = observations[..., :expected_inputs]
     with torch.no_grad():
         logits, _ = model(torch.from_numpy(observations))
         logits = logits.masked_fill(~torch.from_numpy(masks), -1e9)
@@ -693,8 +752,7 @@ def goal_rate(model, env_factory=Swarm3v2, episodes=100, first_seed=30_000):
     return goals / episodes
 
 
-def _evaluate_actions(
-    name,
+def collect_metrics(
     choose_actions,
     episodes=200,
     first_seed=20_000,
@@ -706,6 +764,11 @@ def _evaluate_actions(
     forward_passes = 0
     pass_turnovers = 0
     goals_after_pass = 0
+    multi_attacker_goals = 0
+    episodes_with_attempt = 0
+    episodes_with_completion = 0
+    episodes_with_forward_pass = 0
+    unique_attackers = 0
     receiver_movement = 0.0
     for seed in range(first_seed, first_seed + episodes):
         env = env_factory()
@@ -719,18 +782,52 @@ def _evaluate_actions(
         forward_passes += env.forward_passes
         pass_turnovers += env.pass_turnovers
         goals_after_pass += env.goal_after_pass
+        multi_attacker_goals += env.multi_attacker_goal
+        episodes_with_attempt += env.pass_attempts > 0
+        episodes_with_completion += env.completed_passes > 0
+        episodes_with_forward_pass += env.forward_passes > 0
+        unique_attackers += len(env.possession_contributors)
         receiver_movement += env.receiver_move_metres
     completion_rate = completed_passes / max(pass_attempts, 1)
+    return {
+        "goals": outcomes["success"] / episodes,
+        "turnovers": outcomes["turnover"] / episodes,
+        "out": outcomes["out"] / episodes,
+        "timeouts": outcomes["timeout"] / episodes,
+        "pass_attempts": pass_attempts / episodes,
+        "pass_completion": completion_rate,
+        "forward_passes": forward_passes / episodes,
+        "pass_turnovers": pass_turnovers / episodes,
+        "goals_after_pass": goals_after_pass / episodes,
+        "multi_attacker_goals": multi_attacker_goals / episodes,
+        "episodes_with_attempt": episodes_with_attempt / episodes,
+        "episodes_with_completion": episodes_with_completion / episodes,
+        "episodes_with_forward_pass": episodes_with_forward_pass / episodes,
+        "unique_attackers": unique_attackers / episodes,
+        "receiver_movement": receiver_movement / episodes,
+    }
+
+
+def _evaluate_actions(
+    name,
+    choose_actions,
+    episodes=200,
+    first_seed=20_000,
+    env_factory=Swarm3v2,
+):
+    metrics = collect_metrics(choose_actions, episodes, first_seed, env_factory)
     print(
-        f"{name}: goals={outcomes['success'] / episodes:.1%} "
-        f"turnovers={outcomes['turnover'] / episodes:.1%} "
-        f"out={outcomes['out'] / episodes:.1%} timeouts={outcomes['timeout'] / episodes:.1%} "
-        f"pass_attempts={pass_attempts / episodes:.2f} "
-        f"pass_completion={completion_rate:.1%} forward_passes={forward_passes / episodes:.2f} "
-        f"pass_turnovers={pass_turnovers / episodes:.2f} "
-        f"goals_after_pass={goals_after_pass / episodes:.1%} "
-        f"receiver_movement={receiver_movement / episodes:.2f}m"
+        f"{name}: goals={metrics['goals']:.1%} turnovers={metrics['turnovers']:.1%} "
+        f"out={metrics['out']:.1%} timeouts={metrics['timeouts']:.1%} "
+        f"pass_attempts={metrics['pass_attempts']:.2f} "
+        f"pass_completion={metrics['pass_completion']:.1%} "
+        f"forward_passes={metrics['forward_passes']:.2f} "
+        f"pass_turnovers={metrics['pass_turnovers']:.2f} "
+        f"goals_after_pass={metrics['goals_after_pass']:.1%} "
+        f"multi_attacker_goals={metrics['multi_attacker_goals']:.1%} "
+        f"receiver_movement={metrics['receiver_movement']:.2f}m"
     )
+    return metrics
 
 
 def evaluate(model, episodes=200, first_seed=20_000):
@@ -751,6 +848,36 @@ def evaluate(model, episodes=200, first_seed=20_000):
         return actions
 
     _evaluate_actions("off-ball players frozen", freeze_off_ball, episodes, first_seed)
+
+    def freeze_receiver(env, observations):
+        actions = model_actions(model, observations, env.action_masks())
+        if env.ball.intended_receiver in env.attacker_ids:
+            index = env.attacker_ids.index(env.ball.intended_receiver)
+            actions[index] = Action.HOLD
+        return actions
+
+    _evaluate_actions("intended receiver frozen", freeze_receiver, episodes, first_seed)
+
+    def freeze_support(env, observations):
+        actions = model_actions(model, observations, env.action_masks())
+        for index, number in enumerate(env.attacker_ids):
+            if number not in (env.ball.owner, env.ball.intended_receiver):
+                actions[index] = Action.HOLD
+        return actions
+
+    _evaluate_actions("support players frozen", freeze_support, episodes, first_seed)
+
+    random_generator = np.random.default_rng(first_seed)
+    movement_actions = np.array(list(MOVEMENT), dtype=int)
+
+    def random_off_ball(env, observations):
+        actions = model_actions(model, observations, env.action_masks())
+        for index, number in enumerate(env.attacker_ids):
+            if number != env.ball.owner:
+                actions[index] = random_generator.choice(movement_actions)
+        return actions
+
+    _evaluate_actions("random off-ball movement", random_off_ball, episodes, first_seed)
 
     def direct_play(env, observations):
         actions = np.full(len(env.attacker_ids), Action.RIGHT)
@@ -790,62 +917,138 @@ def main():
         help="steps in the final and hardest curriculum stage",
     )
     parser.add_argument("--model", default="artifacts/goal_swarm_3v2.pt")
+    parser.add_argument("--seeds", type=int, default=1, help="independent training runs")
+    parser.add_argument(
+        "--start-model",
+        default="artifacts/shared_ppo_baseline.pt",
+        help="passing-capable actor used to initialize mixed MAPPO training",
+    )
     args = parser.parse_args()
     if args.train:
-        candidates = []
+        phase_settings = (
+            ("early", (0.40, 0.30, 0.30), 200_000),
+            ("middle", (0.20, 0.30, 0.50), 300_000),
+            ("late", (0.10, 0.20, 0.70), args.steps),
+        )
+        completed_runs = []
+        model_path = Path(args.model)
 
-        def remember_stage(stage_name, trained_model):
-            rate = goal_rate(trained_model)
-            state = {name: value.detach().clone() for name, value in trained_model.state_dict().items()}
-            candidates.append((rate, stage_name, state))
-            print(f"held-out full-3v2 goal rate after {stage_name}: {rate:.1%}")
+        for run in range(args.seeds):
+            run_seed = 100_000 * (run + 1)
+            source_actor = load_model(args.start_model)
+            model = initialize_mappo_from_actor(
+                source_actor,
+                observation_size=SwarmSoccer.observation_size,
+                action_count=SwarmSoccer.action_count,
+                critic_observation_size=SwarmSoccer.critic_observation_size,
+                seed=run_seed,
+            )
+            best_goals = (-1.0, None, None)
+            best_teamwork = (-1.0, None, None)
+            best_overall = (-1.0, None, None)
+            total_steps = 0
+            print(f"training seed {run + 1}/{args.seeds} ({run_seed})")
 
-        print("stage 1/5: learn an unpressured pass and reception")
-        model = train(
-            PassingDrill(pressure=False),
-            120_000,
-            seed=1,
-            filename=args.model,
-        )
-        print("stage 2/5: receive passes with a slow defender")
-        model = train(
-            PassingDrill(pressure=True),
-            180_000,
-            seed=2_000,
-            filename=args.model,
-            model=model,
-        )
-        print("stage 3/5: learn to approach and shoot")
-        model = train(
-            Swarm3v2(starting_jitter=4, defender_speed=0, attacker_x_offset=25, max_ticks=200),
-            150_000,
-            seed=4,
-            filename=args.model,
-            model=model,
-        )
-        remember_stage("stage 3", model)
-        print("stage 4/5: add distance and moderate pressure")
-        model = train(
-            Swarm3v2(starting_jitter=6, defender_speed=0.65, attacker_x_offset=12, max_ticks=300),
-            300_000,
-            seed=10_000,
-            filename=args.model,
-            model=model,
-        )
-        remember_stage("stage 4", model)
-        print("stage 5/5: train the complete 3v2")
-        model = train(
-            Swarm3v2(),
-            args.steps,
-            seed=20_000,
-            filename=args.model,
-            model=model,
-        )
-        remember_stage("stage 5", model)
-        best_rate, best_stage, best_state = max(candidates, key=lambda candidate: candidate[0])
-        model.load_state_dict(best_state)
+            print(f"initialized actor from {args.start_model}")
+
+            for phase_name, weights, phase_steps in phase_settings:
+                remaining = phase_steps
+                while remaining > 0:
+                    chunk = min(100_000, remaining)
+                    env = MixedTrainingEnv(weights)
+                    model = train(
+                        env,
+                        chunk,
+                        seed=run_seed + total_steps,
+                        filename=args.model,
+                        model=model,
+                    )
+                    total_steps += chunk
+                    remaining -= chunk
+
+                    learned = lambda env, observations: model_actions(
+                        model, observations, env.action_masks()
+                    )
+                    full = collect_metrics(learned, episodes=60, first_seed=30_000)
+
+                    def frozen(env, observations):
+                        actions = learned(env, observations)
+                        for index, number in enumerate(env.attacker_ids):
+                            if number != env.ball.owner:
+                                actions[index] = Action.HOLD
+                        return actions
+
+                    frozen_metrics = collect_metrics(
+                        frozen, episodes=60, first_seed=30_000
+                    )
+                    offball_gain = full["goals"] - frozen_metrics["goals"]
+                    teamwork_score = (
+                        full["goals_after_pass"]
+                        + 0.5 * full["episodes_with_forward_pass"]
+                        + 0.5 * max(offball_gain, 0.0)
+                    )
+                    eligible = (
+                        full["goals"] >= 0.60
+                        and full["pass_attempts"] >= 0.30
+                        and full["pass_completion"] >= 0.60
+                        and full["goals_after_pass"] >= 0.20
+                        and offball_gain >= 0.0
+                    )
+                    overall_score = 0.7 * full["goals"] + 0.3 * teamwork_score
+                    state = {
+                        name: value.detach().clone()
+                        for name, value in model.state_dict().items()
+                    }
+                    label = f"{phase_name}@{total_steps}"
+                    if full["goals"] > best_goals[0]:
+                        best_goals = (full["goals"], label, state)
+                        save_model(
+                            model,
+                            model_path.with_name(f"seed_{run + 1}_best_goals.pt"),
+                        )
+                    if teamwork_score > best_teamwork[0] and full["goals"] >= 0.40:
+                        best_teamwork = (teamwork_score, label, state)
+                        save_model(
+                            model,
+                            model_path.with_name(f"seed_{run + 1}_best_teamwork.pt"),
+                        )
+                    if eligible and overall_score > best_overall[0]:
+                        best_overall = (overall_score, label, state)
+                        save_model(
+                            model,
+                            model_path.with_name(f"seed_{run + 1}_best_overall.pt"),
+                        )
+                    print(
+                        f"checkpoint {label}: goals={full['goals']:.1%} "
+                        f"goal_after_pass={full['goals_after_pass']:.1%} "
+                        f"pass_completion={full['pass_completion']:.1%} "
+                        f"offball_gain={offball_gain:+.1%} eligible={eligible}"
+                    )
+
+            selected = best_overall if best_overall[1] is not None else best_goals
+            model.load_state_dict(selected[2])
+            final_metrics = collect_metrics(
+                lambda env, observations: model_actions(
+                    model, observations, env.action_masks()
+                ),
+                episodes=200,
+                first_seed=20_000,
+            )
+            completed_runs.append((final_metrics["goals"], model.state_dict()))
+            print(
+                f"seed {run + 1} selected {selected[1]}: "
+                f"goals={final_metrics['goals']:.1%}, "
+                f"goals_after_pass={final_metrics['goals_after_pass']:.1%}"
+            )
+
+        rates = [rate for rate, _ in completed_runs]
+        best_run = int(np.argmax(rates))
+        model.load_state_dict(completed_runs[best_run][1])
         save_model(model, args.model)
-        print(f"kept {best_stage} checkpoint ({best_rate:.1%} held-out goals)")
+        print(
+            f"selected seed {best_run + 1}; mean goals={np.mean(rates):.1%} "
+            f"standard_deviation={np.std(rates):.1%}"
+        )
     else:
         model = load_model(args.model)
     evaluate(model)

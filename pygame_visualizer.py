@@ -7,7 +7,7 @@ from pathlib import Path
 import pygame
 
 from neural_network import load_model
-from swarm_3v2 import Swarm3v2, SwarmSoccer, model_actions
+from swarm_3v2 import MixedTrainingEnv, Swarm3v2, SwarmSoccer, model_actions
 
 
 WINDOW = (1100, 760)
@@ -99,7 +99,7 @@ def remove_player(env, number):
 
 
 def model_compatible(model, env):
-    return model.body[0].in_features == env.observation_size
+    return model.body[0].in_features <= env.observation_size
 
 
 def choose_ball_owner(env, number):
@@ -162,7 +162,8 @@ def draw(screen, env, font, paused, speed, seed, editing, selected_player, model
     seconds = env.tick / env.ticks_per_second
     mode = "EDIT START" if editing else ("PAUSED" if paused else "PLAYING")
     roster = f"{env.num_attackers}v{env.num_defenders}"
-    status = f"{mode}   {roster}   {speed:g}x   {seconds:.1f}s   SEED {seed}   {env.result.upper()}"
+    scenario = getattr(env, "scenario", "full_game").replace("_", " ").upper()
+    status = f"{mode}   {roster} {scenario}   {speed:g}x   {seconds:.1f}s   SEED {seed}   {env.result.upper()}"
     screen.blit(font.render(status, True, (245, 245, 245)), (MARGIN, 28))
     if editing:
         help_text = "Drag/select | A/D: add team | Delete: remove | B: ball | S/L: save/load | Enter: run"
@@ -187,6 +188,12 @@ def main():
     parser.add_argument("--attackers", type=int, default=3)
     parser.add_argument("--defenders", type=int, default=2)
     parser.add_argument("--scenario", default="scenarios/custom.json")
+    parser.add_argument(
+        "--mode",
+        choices=("full", "easy-pass", "pressured-pass"),
+        default="full",
+        help="full game or one of the training passing drills",
+    )
     args = parser.parse_args()
 
     pygame.init()
@@ -195,8 +202,13 @@ def main():
     font = pygame.font.Font(None, 23)
     clock = pygame.time.Clock()
     model = load_model(args.model)
-    env = Swarm3v2(starting_jitter=args.jitter)
-    if args.attackers != 3 or args.defenders != 2:
+    if args.mode == "easy-pass":
+        env = MixedTrainingEnv((1, 0, 0))
+    elif args.mode == "pressured-pass":
+        env = MixedTrainingEnv((0, 1, 0))
+    else:
+        env = Swarm3v2(starting_jitter=args.jitter)
+    if args.mode == "full" and (args.attackers != 3 or args.defenders != 2):
         env = SwarmSoccer(
             num_attackers=args.attackers,
             num_defenders=args.defenders,

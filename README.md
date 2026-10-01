@@ -44,15 +44,27 @@ python pygame_visualizer.py --attackers 5 --defenders 4
 python pygame_visualizer.py --attackers 6 --defenders 4
 ```
 
+Watch the two passing scenarios used during mixed training:
+
+```bash
+python pygame_visualizer.py --mode easy-pass
+python pygame_visualizer.py --mode pressured-pass
+```
+
+The easy drill places the defenders away from the passing lane. The pressured
+drill adds a slow pressing defender. A drill ends successfully when the agents
+complete a forward pass. Press `N` for another seeded layout or `E` to edit the
+drill positions before running it.
+
 The simulator, scripted defenders, editor, JSON scenarios, PPO data collection,
 and trained model support two to six attackers and one to six defenders. Each
-agent always receives 48 inputs: its own situation plus five teammate slots
+agent always receives 51 inputs: its own situation plus five teammate slots
 and six defender slots. Players are ordered by distance; missing slots contain
 zeros and an existence mask. Observations also include ball velocity, whether
 the ball is loose, whether the agent is the intended receiver, distance from
 the ball path and nearest defender, and whether an open pass exists. This fixed
-format lets the same feed-forward network run different roster sizes without
-changing PPO or the network layers.
+format also includes a three-value training-scenario indicator and lets the
+same feed-forward network run different roster sizes.
 
 The policy has 13 discrete actions: seven movement/hold actions, shoot, and
 five pass-target actions corresponding to the five teammate slots. Action
@@ -62,11 +74,12 @@ empty teammate slots.
 The checkpoint has only trained in 3v2. Larger layouts and custom positions are
 therefore tests of generalization, not situations it has already learned.
 
-During training, every agent's shared actor sees only its own 48-value local
+During training, every agent's shared actor sees only its own 51-value local
 observation. A separate centralized critic receives the complete padded world
-state plus that agent's local observation (126 values total). The Pygame
+state plus that agent's local observation (132 values total). The Pygame
 simulation uses only the decentralized actor. The earlier shared-PPO model is
-preserved at `artifacts/shared_ppo_baseline.pt` for comparison.
+preserved at `artifacts/shared_ppo_baseline.pt`, and the earlier sequential
+MAPPO model is preserved at `artifacts/mappo_sequential.pt`.
 
 ```bash
 python pygame_visualizer.py --seed 20025
@@ -86,6 +99,9 @@ Evaluation uses 200 held-out layouts and reports:
 
 - The complete learned policy
 - The same policy with both off-ball attackers forced to stand still
+- The intended receiver frozen
+- Non-receiving support players frozen
+- Random off-ball movement
 - A direct run-and-shoot strategy
 - Zero-shot performance in 5v4 and 6v4
 
@@ -97,19 +113,22 @@ Current MAPPO checkpoint results:
 
 | Strategy | Goals | Turnovers | Completed passes per episode |
 |---|---:|---:|---:|
-| Learned policy, 3v2 | 69.5% | 30.5% | 0.00 |
-| Off-ball players frozen, 3v2 | 65.0% | 35.0% | 0.00 |
+| Learned policy, 3v2 | 97.0% | 1.5% | 0.74 |
+| Off-ball players frozen, 3v2 | 96.5% | 3.5% | 0.81 |
+| Intended receiver frozen, 3v2 | 96.5% | 3.5% | 0.82 |
+| Support players frozen, 3v2 | 96.5% | 2.0% | 0.74 |
+| Random off-ball movement, 3v2 | 48.5% | 2.0% | 0.24 |
 | Direct run and shoot | 35.5% | 64.5% | 0.00 |
-| Learned policy, 5v4 zero-shot | 38.0% | 62.0% | 0.00 |
+| Learned policy, 5v4 zero-shot | 43.0% | 32.0% | 25.20 |
 | Direct run and shoot, 5v4 | 12.5% | 87.5% | 0.00 |
-| Learned policy, 6v4 zero-shot | 37.5% | 62.5% | 0.00 |
+| Learned policy, 6v4 zero-shot | 42.5% | 33.5% | 37.00 |
 | Direct run and shoot, 6v4 | 13.0% | 87.0% | 0.00 |
 
-Compared with the shared-PPO baseline, MAPPO improved 6v4 goals from 30.0% to
-37.5%. Freezing off-ball players now reduces 3v2 goals from 69.5% to 65.0%, so
-the learned movement provides some value. However, MAPPO stopped choosing pass
-actions and its 3v2 goal rate is below the baseline's 88.5%. This is a mixed
-experimental result rather than evidence that MAPPO is universally better.
+The selected policy completes 98.0% of 3v2 pass attempts, and 65.5% of episodes
+end with a multi-attacker goal after a pass. Freezing learned off-ball movement
+has little effect, but replacing it with random movement drops scoring to
+48.5%, showing that uncontrolled movement is strongly harmful. The much higher
+pass counts in larger rosters also reveal a remaining tendency to over-pass.
 
 Run the preserved baseline through the same evaluator with:
 
@@ -124,24 +143,33 @@ python swarm_3v2.py --model artifacts/shared_ppo_baseline.pt
 python swarm_3v2.py --train
 ```
 
-Training uses a five-stage curriculum:
+Training starts from the passing-capable shared-PPO actor and gives it a new
+centralized MAPPO critic. It then samples three 3v2 scenarios throughout
+training:
 
-1. Learn passing and receiving without pressure.
-2. Receive passes against a slow defender.
-3. Learn to approach and shoot near goal with stationary defenders.
-4. Start farther from goal against moderately fast defenders.
-5. Train on the complete 3v2 with broader layouts and stronger defenders.
+1. An unpressured passing drill.
+2. A pressured passing drill.
+3. The complete 3v2 game.
 
-The final stage uses 700,000 simulation steps by default. Change only that
-stage's budget with, for example:
+The mixture changes from 40/30/30 early, to 20/30/50 in the middle, and
+10/20/70 late. Passing practice therefore never disappears. The same Adam
+optimizer is preserved across all phases.
+
+The reported experiment used three independent seeds and a 400,000-step late
+phase:
 
 ```bash
-python swarm_3v2.py --train --steps 1000000
+python swarm_3v2.py --train --steps 400000 --seeds 3
 ```
 
-Each curriculum stage is tested on held-out full 3v2 layouts. The best stage is
-kept so a later stage cannot replace it after a training collapse. The
-resulting model is saved to `artifacts/goal_swarm_3v2.pt`.
+Every 100,000 steps, training measures goals, passing, and off-ball value on
+held-out layouts. Each seed saves separate best-goals, best-teamwork, and
+best-overall checkpoints. A best-overall checkpoint must meet minimum scoring,
+passing, goal-after-pass, and off-ball requirements. The selected model is
+saved to `artifacts/goal_swarm_3v2.pt`.
+
+Across the three reported seeds, average 3v2 scoring was 91.8% with a 3.7
+percentage-point standard deviation.
 
 ## Rewards
 
