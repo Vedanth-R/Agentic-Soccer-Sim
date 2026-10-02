@@ -91,6 +91,20 @@ values test layouts outside its normal training distribution.
 
 ## Evaluate
 
+Print a compact comparison of the trained 3v2 scenario and the two zero-shot
+team sizes:
+
+```bash
+python swarm_3v2.py --report
+```
+
+This runs 200 held-out episodes for each scenario and reports goal rate,
+turnover rate, pass completion, and completed passes per episode. The 5v4 and
+6v4 tests load the 3v2 model without retraining it. Change the sample size with,
+for example, `--episodes 500`.
+
+For the complete off-ball and direct-play diagnostic evaluation, run:
+
 ```bash
 python swarm_3v2.py
 ```

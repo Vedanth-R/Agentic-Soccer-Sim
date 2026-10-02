@@ -907,9 +907,60 @@ def evaluate(model, episodes=200, first_seed=20_000):
         )
 
 
+def print_generalization_report(model, episodes=200, first_seed=20_000):
+    """Print a compact comparison of trained and zero-shot performance."""
+
+    learned = lambda env, observations: model_actions(
+        model, observations, env.action_masks()
+    )
+    scenarios = ((3, 2, "trained"), (5, 4, "zero-shot"), (6, 4, "zero-shot"))
+
+    print(f"Model evaluation: {episodes} held-out episodes per scenario")
+    print(f"Seeds: {first_seed} through {first_seed + episodes - 1}")
+    print()
+    print(
+        f"{'Scenario':<10} {'Test type':<11} {'Goal rate':>10} "
+        f"{'Turnovers':>10} {'Pass comp.':>11} {'Passes/ep':>10}"
+    )
+    print("-" * 68)
+    for attackers, defenders, test_type in scenarios:
+        make_env = lambda a=attackers, d=defenders: SwarmSoccer(a, d)
+        metrics = collect_metrics(
+            learned,
+            episodes=episodes,
+            first_seed=first_seed,
+            env_factory=make_env,
+        )
+        completed_passes = metrics["pass_attempts"] * metrics["pass_completion"]
+        print(
+            f"{attackers}v{defenders:<7} {test_type:<11} "
+            f"{metrics['goals']:>9.1%} {metrics['turnovers']:>9.1%} "
+            f"{metrics['pass_completion']:>10.1%} {completed_passes:>10.2f}"
+        )
+
+    print("\n3v2 is the trained scenario; 5v4 and 6v4 use the model without retraining.")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train", action="store_true")
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="print a compact 3v2, 5v4, and 6v4 generalization report",
+    )
+    parser.add_argument(
+        "--episodes",
+        type=int,
+        default=200,
+        help="held-out episodes per scenario during evaluation (default: 200)",
+    )
+    parser.add_argument(
+        "--first-seed",
+        type=int,
+        default=20_000,
+        help="first deterministic evaluation seed (default: 20000)",
+    )
     parser.add_argument(
         "--steps",
         type=int,
@@ -924,6 +975,8 @@ def main():
         help="passing-capable actor used to initialize mixed MAPPO training",
     )
     args = parser.parse_args()
+    if args.episodes < 1:
+        parser.error("--episodes must be at least 1")
     if args.train:
         phase_settings = (
             ("early", (0.40, 0.30, 0.30), 200_000),
@@ -1051,7 +1104,10 @@ def main():
         )
     else:
         model = load_model(args.model)
-    evaluate(model)
+    if args.report:
+        print_generalization_report(model, args.episodes, args.first_seed)
+    else:
+        evaluate(model, args.episodes, args.first_seed)
 
 
 if __name__ == "__main__":
