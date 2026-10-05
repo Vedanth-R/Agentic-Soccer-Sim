@@ -592,23 +592,56 @@ class SwarmSoccer:
             self.ball.intended_receiver = None
 
     def _defender_directions(self):
+        """Coordinate scripted defenders around the goal and passing lanes."""
+
         pressing = min(
             self.defender_ids,
             key=lambda number: distance(self.players[number].position, self.ball.position),
         )
-        directions = {}
-        markers = [number for number in self.defender_ids if number != pressing]
-        attacking_options = sorted(
-            (self.players[n] for n in self.attacker_ids),
-            key=lambda player: player.position[0],
-            reverse=True,
+
+        # The presser approaches from the goal side instead of running directly
+        # at the ball. At 1.25 metres it is still inside the tackle radius.
+        goal = np.array([self.width, self.goal_center_y])
+        ball_to_goal = goal - self.ball.position
+        length = np.linalg.norm(ball_to_goal)
+        if length == 0:
+            press_target = self.ball.position
+        else:
+            press_target = self.ball.position + ball_to_goal / length * 1.25
+
+        directions = {
+            pressing: direction_to(
+                self.players[pressing].position,
+                press_target,
+                self.defender_speed,
+            )
+        }
+
+        covering = [number for number in self.defender_ids if number != pressing]
+        receivers = [
+            self.players[number]
+            for number in self.attacker_ids
+            if number != self.ball.owner
+        ]
+        # Forward receivers are more dangerous because they are closer to goal.
+        receivers.sort(
+            key=lambda player: (
+                -player.position[0],
+                distance(player.position, self.ball.position),
+                player.number,
+            )
         )
-        for number in self.defender_ids:
-            if number == pressing:
-                target = self.ball.position
+
+        for index, number in enumerate(covering):
+            if receivers:
+                receiver = receivers[index % len(receivers)]
+                # Occupy the passing lane slightly closer to the receiver. This
+                # leaves the presser room while making a direct pass risky.
+                target = self.ball.position + 0.60 * (
+                    receiver.position - self.ball.position
+                )
             else:
-                marked = attacking_options[markers.index(number) % len(attacking_options)]
-                target = np.array([min(marked.position[0] + 3.0, 94.0), marked.position[1]])
+                target = goal - np.array([8.0, 0.0])
             directions[number] = direction_to(
                 self.players[number].position,
                 target,

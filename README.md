@@ -4,9 +4,10 @@ PitchLab trains soccer agents with Multi-Agent Proximal Policy Optimization
 (MAPPO). The current checkpoint is trained in 3v2, then evaluated without
 further training in 5v4 and 6v4 to measure zero-shot transfer.
 
-The nearest defender presses the ball while the second defender marks a
-forward attacker. The attackers make separate decisions because each receives
-its own view of the players and ball.
+The nearest defender approaches from the goal side to block the shooting
+angle, while the other defenders move into dangerous passing lanes. The
+attackers make separate decisions because each receives its own view of the
+players and ball.
 
 
 ## Run it
@@ -127,21 +128,21 @@ Current MAPPO checkpoint results:
 
 | Strategy | Goals | Turnovers | Completed passes per episode |
 |---|---:|---:|---:|
-| Learned policy, 3v2 | 97.0% | 1.5% | 0.74 |
-| Off-ball players frozen, 3v2 | 96.5% | 3.5% | 0.81 |
-| Intended receiver frozen, 3v2 | 96.5% | 3.5% | 0.82 |
-| Support players frozen, 3v2 | 96.5% | 2.0% | 0.74 |
-| Random off-ball movement, 3v2 | 48.5% | 2.0% | 0.24 |
-| Direct run and shoot | 35.5% | 64.5% | 0.00 |
-| Learned policy, 5v4 zero-shot | 43.0% | 32.0% | 25.20 |
-| Direct run and shoot, 5v4 | 12.5% | 87.5% | 0.00 |
-| Learned policy, 6v4 zero-shot | 42.5% | 33.5% | 37.00 |
-| Direct run and shoot, 6v4 | 13.0% | 87.0% | 0.00 |
+| Learned policy, 3v2 | 88.5% | 10.0% | 0.74 |
+| Off-ball players frozen, 3v2 | 86.0% | 14.0% | 0.82 |
+| Intended receiver frozen, 3v2 | 87.5% | 12.5% | 0.82 |
+| Support players frozen, 3v2 | 89.0% | 9.5% | 0.74 |
+| Random off-ball movement, 3v2 | 41.0% | 11.5% | 0.22 |
+| Direct run and shoot | 24.0% | 76.0% | 0.00 |
+| Learned policy, 5v4 zero-shot | 34.0% | 39.5% | 29.19 |
+| Direct run and shoot, 5v4 | 3.5% | 96.5% | 0.00 |
+| Learned policy, 6v4 zero-shot | 32.0% | 39.0% | 51.97 |
+| Direct run and shoot, 6v4 | 3.0% | 97.0% | 0.00 |
 
-The selected policy completes 98.0% of 3v2 pass attempts, and 65.5% of episodes
+The selected policy completes 98.0% of 3v2 pass attempts, and 62.0% of episodes
 end with a multi-attacker goal after a pass. Freezing learned off-ball movement
 has little effect, but replacing it with random movement drops scoring to
-48.5%, showing that uncontrolled movement is strongly harmful. The much higher
+41.0%, showing that uncontrolled movement is strongly harmful. The much higher
 pass counts in larger rosters also reveal a remaining tendency to over-pass.
 
 Run the preserved baseline through the same evaluator with:

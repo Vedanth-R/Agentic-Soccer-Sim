@@ -166,7 +166,7 @@ def draw(screen, env, font, paused, speed, seed, editing, selected_player, model
     status = f"{mode}   {roster} {scenario}   {speed:g}x   {seconds:.1f}s   SEED {seed}   {env.result.upper()}"
     screen.blit(font.render(status, True, (245, 245, 245)), (MARGIN, 28))
     if editing:
-        help_text = "Drag/select | A/D: add team | Delete: remove | B: ball | S/L: save/load | Enter: run"
+        help_text = "Drag blue attackers or red defenders | A/D: add | Delete: remove | S/L: save/load | Enter: run"
     else:
         help_text = "E: edit start   Space: pause   R: replay   N: new layout   -/+: speed"
     screen.blit(font.render(help_text, True, (180, 190, 195)), (MARGIN, 58))
