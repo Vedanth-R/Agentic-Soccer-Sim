@@ -40,6 +40,8 @@ PASS_ACTIONS = {
     Action.PASS_5,
 }
 
+DEFENSE_STYLES = ("goal-side", "passing-lanes")
+
 
 MOVEMENT = {
     Action.HOLD: (0.0, 0.0),
@@ -100,10 +102,15 @@ class SwarmSoccer:
         num_defenders=2,
         starting_jitter=8.0,
         defender_speed=0.90,
+        defense_style="goal-side",
         attacker_x_offset=0.0,
         max_ticks=400,
     ):
         self._validate_roster(num_attackers, num_defenders)
+        if defense_style not in DEFENSE_STYLES:
+            raise ValueError(
+                f"defense_style must be one of: {', '.join(DEFENSE_STYLES)}"
+            )
         self.num_attackers = num_attackers
         self.num_defenders = num_defenders
         self.attacker_ids = tuple(range(1, num_attackers + 1))
@@ -113,6 +120,7 @@ class SwarmSoccer:
         self.starting_positions = self._starting_positions()
         self.starting_jitter = starting_jitter
         self.defender_speed = defender_speed
+        self.defense_style = defense_style
         self.attacker_x_offset = attacker_x_offset
         self.max_ticks = max_ticks
         self.players = {}
@@ -594,6 +602,34 @@ class SwarmSoccer:
     def _defender_directions(self):
         """Coordinate scripted defenders around the goal and passing lanes."""
 
+        receivers = [
+            self.players[number]
+            for number in self.attacker_ids
+            if number != self.ball.owner
+        ]
+        # Forward receivers are more dangerous because they are closer to goal.
+        receivers.sort(
+            key=lambda player: (
+                -player.position[0],
+                distance(player.position, self.ball.position),
+                player.number,
+            )
+        )
+
+        if self.defense_style == "passing-lanes":
+            directions = {}
+            for index, number in enumerate(self.defender_ids):
+                receiver = receivers[index % len(receivers)]
+                target = self.ball.position + 0.60 * (
+                    receiver.position - self.ball.position
+                )
+                directions[number] = direction_to(
+                    self.players[number].position,
+                    target,
+                    self.defender_speed,
+                )
+            return directions
+
         pressing = min(
             self.defender_ids,
             key=lambda number: distance(self.players[number].position, self.ball.position),
@@ -618,30 +654,13 @@ class SwarmSoccer:
         }
 
         covering = [number for number in self.defender_ids if number != pressing]
-        receivers = [
-            self.players[number]
-            for number in self.attacker_ids
-            if number != self.ball.owner
-        ]
-        # Forward receivers are more dangerous because they are closer to goal.
-        receivers.sort(
-            key=lambda player: (
-                -player.position[0],
-                distance(player.position, self.ball.position),
-                player.number,
-            )
-        )
-
         for index, number in enumerate(covering):
-            if receivers:
-                receiver = receivers[index % len(receivers)]
-                # Occupy the passing lane slightly closer to the receiver. This
-                # leaves the presser room while making a direct pass risky.
-                target = self.ball.position + 0.60 * (
-                    receiver.position - self.ball.position
-                )
-            else:
-                target = goal - np.array([8.0, 0.0])
+            receiver = receivers[index % len(receivers)]
+            # Occupy the passing lane slightly closer to the receiver. This
+            # leaves the presser room while making a direct pass risky.
+            target = self.ball.position + 0.60 * (
+                receiver.position - self.ball.position
+            )
             directions[number] = direction_to(
                 self.players[number].position,
                 target,
@@ -863,14 +882,17 @@ def _evaluate_actions(
     return metrics
 
 
-def evaluate(model, episodes=200, first_seed=20_000):
+def evaluate(model, episodes=200, first_seed=20_000, defense_style="goal-side"):
     """Compare the policy with its off-ball movement removed and direct play."""
 
+    base_env = lambda: Swarm3v2(defense_style=defense_style)
+
     _evaluate_actions(
-        "learned policy",
+        f"learned policy ({defense_style})",
         lambda env, observations: model_actions(model, observations, env.action_masks()),
         episodes,
         first_seed,
+        base_env,
     )
 
     def freeze_off_ball(env, observations):
@@ -880,7 +902,9 @@ def evaluate(model, episodes=200, first_seed=20_000):
                 actions[index] = Action.HOLD
         return actions
 
-    _evaluate_actions("off-ball players frozen", freeze_off_ball, episodes, first_seed)
+    _evaluate_actions(
+        "off-ball players frozen", freeze_off_ball, episodes, first_seed, base_env
+    )
 
     def freeze_receiver(env, observations):
         actions = model_actions(model, observations, env.action_masks())
@@ -889,7 +913,9 @@ def evaluate(model, episodes=200, first_seed=20_000):
             actions[index] = Action.HOLD
         return actions
 
-    _evaluate_actions("intended receiver frozen", freeze_receiver, episodes, first_seed)
+    _evaluate_actions(
+        "intended receiver frozen", freeze_receiver, episodes, first_seed, base_env
+    )
 
     def freeze_support(env, observations):
         actions = model_actions(model, observations, env.action_masks())
@@ -898,7 +924,9 @@ def evaluate(model, episodes=200, first_seed=20_000):
                 actions[index] = Action.HOLD
         return actions
 
-    _evaluate_actions("support players frozen", freeze_support, episodes, first_seed)
+    _evaluate_actions(
+        "support players frozen", freeze_support, episodes, first_seed, base_env
+    )
 
     random_generator = np.random.default_rng(first_seed)
     movement_actions = np.array(list(MOVEMENT), dtype=int)
@@ -910,7 +938,9 @@ def evaluate(model, episodes=200, first_seed=20_000):
                 actions[index] = random_generator.choice(movement_actions)
         return actions
 
-    _evaluate_actions("random off-ball movement", random_off_ball, episodes, first_seed)
+    _evaluate_actions(
+        "random off-ball movement", random_off_ball, episodes, first_seed, base_env
+    )
 
     def direct_play(env, observations):
         actions = np.full(len(env.attacker_ids), Action.RIGHT)
@@ -920,10 +950,14 @@ def evaluate(model, episodes=200, first_seed=20_000):
                 actions[env.attacker_ids.index(env.ball.owner)] = Action.SHOOT
         return actions
 
-    _evaluate_actions("direct run and shoot", direct_play, episodes, first_seed)
+    _evaluate_actions(
+        "direct run and shoot", direct_play, episodes, first_seed, base_env
+    )
 
     for attackers, defenders in ((5, 4), (6, 4)):
-        make_env = lambda a=attackers, d=defenders: SwarmSoccer(a, d)
+        make_env = lambda a=attackers, d=defenders: SwarmSoccer(
+            a, d, defense_style=defense_style
+        )
         _evaluate_actions(
             f"learned policy {attackers}v{defenders}",
             lambda env, observations: model_actions(model, observations, env.action_masks()),
@@ -940,36 +974,42 @@ def evaluate(model, episodes=200, first_seed=20_000):
         )
 
 
-def print_generalization_report(model, episodes=200, first_seed=20_000):
+def print_generalization_report(
+    model, episodes=200, first_seed=20_000, defense_style="goal-side"
+):
     """Print a compact comparison of trained and zero-shot performance."""
 
     learned = lambda env, observations: model_actions(
         model, observations, env.action_masks()
     )
     scenarios = ((3, 2, "trained"), (5, 4, "zero-shot"), (6, 4, "zero-shot"))
+    defense_styles = DEFENSE_STYLES if defense_style == "all" else (defense_style,)
 
     print(f"Model evaluation: {episodes} held-out episodes per scenario")
     print(f"Seeds: {first_seed} through {first_seed + episodes - 1}")
     print()
     print(
-        f"{'Scenario':<10} {'Test type':<11} {'Goal rate':>10} "
+        f"{'Scenario':<9} {'Defense':<14} {'Test type':<11} {'Goal rate':>10} "
         f"{'Turnovers':>10} {'Pass comp.':>11} {'Passes/ep':>10}"
     )
-    print("-" * 68)
+    print("-" * 83)
     for attackers, defenders, test_type in scenarios:
-        make_env = lambda a=attackers, d=defenders: SwarmSoccer(a, d)
-        metrics = collect_metrics(
-            learned,
-            episodes=episodes,
-            first_seed=first_seed,
-            env_factory=make_env,
-        )
-        completed_passes = metrics["pass_attempts"] * metrics["pass_completion"]
-        print(
-            f"{attackers}v{defenders:<7} {test_type:<11} "
-            f"{metrics['goals']:>9.1%} {metrics['turnovers']:>9.1%} "
-            f"{metrics['pass_completion']:>10.1%} {completed_passes:>10.2f}"
-        )
+        for style in defense_styles:
+            make_env = lambda a=attackers, d=defenders, s=style: SwarmSoccer(
+                a, d, defense_style=s
+            )
+            metrics = collect_metrics(
+                learned,
+                episodes=episodes,
+                first_seed=first_seed,
+                env_factory=make_env,
+            )
+            completed_passes = metrics["pass_attempts"] * metrics["pass_completion"]
+            print(
+                f"{attackers}v{defenders:<6} {style:<14} {test_type:<11} "
+                f"{metrics['goals']:>9.1%} {metrics['turnovers']:>9.1%} "
+                f"{metrics['pass_completion']:>10.1%} {completed_passes:>10.2f}"
+            )
 
     print("\n3v2 is the trained scenario; 5v4 and 6v4 use the model without retraining.")
 
@@ -995,6 +1035,12 @@ def main():
         help="first deterministic evaluation seed (default: 20000)",
     )
     parser.add_argument(
+        "--defense",
+        choices=DEFENSE_STYLES + ("all",),
+        default="goal-side",
+        help="scripted defense to evaluate; 'all' compares both",
+    )
+    parser.add_argument(
         "--steps",
         type=int,
         default=700_000,
@@ -1010,6 +1056,8 @@ def main():
     args = parser.parse_args()
     if args.episodes < 1:
         parser.error("--episodes must be at least 1")
+    if args.train and args.defense != "goal-side":
+        parser.error("--defense is an evaluation option; training currently uses goal-side")
     if args.train:
         phase_settings = (
             ("early", (0.40, 0.30, 0.30), 200_000),
@@ -1138,9 +1186,15 @@ def main():
     else:
         model = load_model(args.model)
     if args.report:
-        print_generalization_report(model, args.episodes, args.first_seed)
+        print_generalization_report(
+            model, args.episodes, args.first_seed, args.defense
+        )
+    elif args.defense == "all":
+        for style in DEFENSE_STYLES:
+            print(f"\n=== {style} defense ===")
+            evaluate(model, args.episodes, args.first_seed, style)
     else:
-        evaluate(model, args.episodes, args.first_seed)
+        evaluate(model, args.episodes, args.first_seed, args.defense)
 
 
 if __name__ == "__main__":

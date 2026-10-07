@@ -52,6 +52,17 @@ python pygame_visualizer.py --mode easy-pass
 python pygame_visualizer.py --mode pressured-pass
 ```
 
+Compare the two scripted defensive strategies visually:
+
+```bash
+python pygame_visualizer.py --defense goal-side
+python pygame_visualizer.py --defense passing-lanes
+```
+
+Goal-side defense sends the closest defender between the ball and goal while
+the others cover receivers. Passing-lane defense has every defender block a
+different receiver and deliberately leaves the ball carrier unpressured.
+
 The easy drill places the defenders away from the passing lane. The pressured
 drill adds a slow pressing defender. A drill ends successfully when the agents
 complete a forward pass. Press `N` for another seeded layout or `E` to edit the
@@ -103,6 +114,19 @@ This runs 200 held-out episodes for each scenario and reports goal rate,
 turnover rate, pass completion, and completed passes per episode. The 5v4 and
 6v4 tests load the 3v2 model without retraining it. Change the sample size with,
 for example, `--episodes 500`.
+
+Run a controlled comparison of both defenses on the same held-out layouts:
+
+```bash
+python swarm_3v2.py --report --defense all
+```
+
+You can test only one strategy with `--defense goal-side` or
+`--defense passing-lanes`. In the current 200-episode comparison, goal-side
+versus passing-lane goal rates were 88.5% versus 98.5% in 3v2, 34.0% versus
+59.0% in 5v4, and 32.0% versus 57.0% in 6v4. Pure passing-lane defense is
+easier for this model because it gives the ball carrier time and space to
+advance directly.
 
 For the complete off-ball and direct-play diagnostic evaluation, run:
 

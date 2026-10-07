@@ -187,6 +187,12 @@ def main():
     )
     parser.add_argument("--attackers", type=int, default=3)
     parser.add_argument("--defenders", type=int, default=2)
+    parser.add_argument(
+        "--defense",
+        choices=("goal-side", "passing-lanes"),
+        default="goal-side",
+        help="scripted defensive strategy",
+    )
     parser.add_argument("--scenario", default="scenarios/custom.json")
     parser.add_argument(
         "--mode",
@@ -207,13 +213,18 @@ def main():
     elif args.mode == "pressured-pass":
         env = MixedTrainingEnv((0, 1, 0))
     else:
-        env = Swarm3v2(starting_jitter=args.jitter)
+        env = Swarm3v2(
+            starting_jitter=args.jitter,
+            defense_style=args.defense,
+        )
     if args.mode == "full" and (args.attackers != 3 or args.defenders != 2):
         env = SwarmSoccer(
             num_attackers=args.attackers,
             num_defenders=args.defenders,
             starting_jitter=args.jitter,
+            defense_style=args.defense,
         )
+    env.defense_style = args.defense
     current_seed = args.seed
     observations = env.reset(current_seed)
     starting_setup = capture_setup(env)
