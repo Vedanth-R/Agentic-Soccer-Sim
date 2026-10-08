@@ -19,6 +19,8 @@ python pygame_visualizer.py
 
 Viewer controls:
 
+- Click the `DEFENSE` button, or press `F`, to switch defensive strategy and
+  return to the starting layout. Press `Enter` to run the new comparison.
 - `Space`: pause or resume
 - `R`: replay the same layout
 - `N`: use the next seeded layout
@@ -67,16 +69,6 @@ The easy drill places the defenders away from the passing lane. The pressured
 drill adds a slow pressing defender. A drill ends successfully when the agents
 complete a forward pass. Press `N` for another seeded layout or `E` to edit the
 drill positions before running it.
-
-The simulator, scripted defenders, editor, JSON scenarios, PPO data collection,
-and trained model support two to six attackers and one to six defenders. Each
-agent always receives 51 inputs: its own situation plus five teammate slots
-and six defender slots. Players are ordered by distance; missing slots contain
-zeros and an existence mask. Observations also include ball velocity, whether
-the ball is loose, whether the agent is the intended receiver, distance from
-the ball path and nearest defender, and whether an open pass exists. This fixed
-format also includes a three-value training-scenario indicator and lets the
-same feed-forward network run different roster sizes.
 
 The policy has 13 discrete actions: seven movement/hold actions, shoot, and
 five pass-target actions corresponding to the five teammate slots. Action

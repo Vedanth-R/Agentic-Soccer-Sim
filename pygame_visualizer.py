@@ -16,6 +16,7 @@ TOP = 120
 FIELD_COLOR = (48, 139, 79)
 LINE_COLOR = (240, 240, 230)
 TEAM_COLORS = ((54, 133, 255), (238, 73, 78))
+DEFENSE_BUTTON = pygame.Rect(WINDOW[0] - 280, 18, 225, 34)
 
 
 def screen_position(env, position):
@@ -113,6 +114,14 @@ def choose_ball_owner(env, number):
     env.ball.possession_ticks = 0
 
 
+def toggle_defense(env):
+    """Switch between the two deterministic defensive strategies."""
+
+    env.defense_style = (
+        "passing-lanes" if env.defense_style == "goal-side" else "goal-side"
+    )
+
+
 def draw(screen, env, font, paused, speed, seed, editing, selected_player, model_input_size):
     screen.fill((24, 31, 36))
     top_left = screen_position(env, (0, 0))
@@ -165,10 +174,15 @@ def draw(screen, env, font, paused, speed, seed, editing, selected_player, model
     scenario = getattr(env, "scenario", "full_game").replace("_", " ").upper()
     status = f"{mode}   {roster} {scenario}   {speed:g}x   {seconds:.1f}s   SEED {seed}   {env.result.upper()}"
     screen.blit(font.render(status, True, (245, 245, 245)), (MARGIN, 28))
+    pygame.draw.rect(screen, (55, 66, 73), DEFENSE_BUTTON, border_radius=7)
+    pygame.draw.rect(screen, (130, 190, 220), DEFENSE_BUTTON, 2, border_radius=7)
+    defense_name = env.defense_style.replace("-", " ").upper()
+    defense_label = font.render(f"DEFENSE: {defense_name}", True, (245, 245, 245))
+    screen.blit(defense_label, defense_label.get_rect(center=DEFENSE_BUTTON.center))
     if editing:
-        help_text = "Drag blue attackers or red defenders | A/D: add | Delete: remove | S/L: save/load | Enter: run"
+        help_text = "Drag players | Click defense or F: switch | A/D: add | Delete: remove | S/L: save/load | Enter: run"
     else:
-        help_text = "E: edit start   Space: pause   R: replay   N: new layout   -/+: speed"
+        help_text = "Click defense or F: switch   E: edit   Space: pause   R: replay   N: new layout   -/+: speed"
     screen.blit(font.render(help_text, True, (180, 190, 195)), (MARGIN, 58))
     if model_input_size != env.observation_size:
         warning = f"Saved model needs {model_input_size} inputs; this {roster} layout creates {env.observation_size}. Save it for Phase 2."
@@ -244,6 +258,17 @@ def main():
             ):
                 running = False
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_e:
+                observations = restore_setup(env, starting_setup)
+                editing = True
+                paused = True
+                selected_player = None
+                accumulated_time = 0.0
+            elif (
+                event.type == pygame.MOUSEBUTTONDOWN
+                and event.button == 1
+                and DEFENSE_BUTTON.collidepoint(event.pos)
+            ) or (event.type == pygame.KEYDOWN and event.key == pygame.K_f):
+                toggle_defense(env)
                 observations = restore_setup(env, starting_setup)
                 editing = True
                 paused = True
