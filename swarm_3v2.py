@@ -1,7 +1,7 @@
 """A configurable soccer world used for training and evaluation.
 
-Attackers share one neural network. One defender presses the ball while the
-others mark forward attackers. The episode is won only by scoring a goal.
+Attackers share one neural network. Defenders follow one of three selectable
+scripted strategies. The episode is won only by scoring a goal.
 """
 
 import argparse
@@ -40,7 +40,7 @@ PASS_ACTIONS = {
     Action.PASS_5,
 }
 
-DEFENSE_STYLES = ("goal-side", "passing-lanes")
+DEFENSE_STYLES = ("goal-side", "passing-lanes", "original")
 
 
 MOVEMENT = {
@@ -602,6 +602,36 @@ class SwarmSoccer:
     def _defender_directions(self):
         """Coordinate scripted defenders around the goal and passing lanes."""
 
+        pressing = min(
+            self.defender_ids,
+            key=lambda number: distance(self.players[number].position, self.ball.position),
+        )
+
+        if self.defense_style == "original":
+            directions = {}
+            markers = [number for number in self.defender_ids if number != pressing]
+            attacking_options = sorted(
+                (self.players[number] for number in self.attacker_ids),
+                key=lambda player: player.position[0],
+                reverse=True,
+            )
+            for number in self.defender_ids:
+                if number == pressing:
+                    target = self.ball.position
+                else:
+                    marked = attacking_options[
+                        markers.index(number) % len(attacking_options)
+                    ]
+                    target = np.array(
+                        [min(marked.position[0] + 3.0, 94.0), marked.position[1]]
+                    )
+                directions[number] = direction_to(
+                    self.players[number].position,
+                    target,
+                    self.defender_speed,
+                )
+            return directions
+
         receivers = [
             self.players[number]
             for number in self.attacker_ids
@@ -629,11 +659,6 @@ class SwarmSoccer:
                     self.defender_speed,
                 )
             return directions
-
-        pressing = min(
-            self.defender_ids,
-            key=lambda number: distance(self.players[number].position, self.ball.position),
-        )
 
         # The presser approaches from the goal side instead of running directly
         # at the ball. At 1.25 metres it is still inside the tackle radius.
@@ -982,7 +1007,7 @@ def print_generalization_report(
     learned = lambda env, observations: model_actions(
         model, observations, env.action_masks()
     )
-    scenarios = ((3, 2, "trained"), (5, 4, "zero-shot"), (6, 4, "zero-shot"))
+    scenarios = ((3, 2, "base roster"), (5, 4, "zero-shot"), (6, 4, "zero-shot"))
     defense_styles = DEFENSE_STYLES if defense_style == "all" else (defense_style,)
 
     print(f"Model evaluation: {episodes} held-out episodes per scenario")
@@ -1011,7 +1036,10 @@ def print_generalization_report(
                 f"{metrics['pass_completion']:>10.1%} {completed_passes:>10.2f}"
             )
 
-    print("\n3v2 is the trained scenario; 5v4 and 6v4 use the model without retraining.")
+    print(
+        "\nThe model trained in 3v2 against the original defense. "
+        "The newer defenses and larger rosters are evaluated without retraining."
+    )
 
 
 def main():

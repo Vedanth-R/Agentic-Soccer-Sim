@@ -7,7 +7,13 @@ from pathlib import Path
 import pygame
 
 from neural_network import load_model
-from swarm_3v2 import MixedTrainingEnv, Swarm3v2, SwarmSoccer, model_actions
+from swarm_3v2 import (
+    DEFENSE_STYLES,
+    MixedTrainingEnv,
+    Swarm3v2,
+    SwarmSoccer,
+    model_actions,
+)
 
 
 WINDOW = (1100, 760)
@@ -115,11 +121,10 @@ def choose_ball_owner(env, number):
 
 
 def toggle_defense(env):
-    """Switch between the two deterministic defensive strategies."""
+    """Cycle through the deterministic defensive strategies."""
 
-    env.defense_style = (
-        "passing-lanes" if env.defense_style == "goal-side" else "goal-side"
-    )
+    current = DEFENSE_STYLES.index(env.defense_style)
+    env.defense_style = DEFENSE_STYLES[(current + 1) % len(DEFENSE_STYLES)]
 
 
 def draw(screen, env, font, paused, speed, seed, editing, selected_player, model_input_size):
@@ -203,7 +208,7 @@ def main():
     parser.add_argument("--defenders", type=int, default=2)
     parser.add_argument(
         "--defense",
-        choices=("goal-side", "passing-lanes"),
+        choices=DEFENSE_STYLES,
         default="goal-side",
         help="scripted defensive strategy",
     )

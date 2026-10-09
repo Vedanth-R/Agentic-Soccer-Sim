@@ -4,10 +4,9 @@ PitchLab trains soccer agents with Multi-Agent Proximal Policy Optimization
 (MAPPO). The current checkpoint is trained in 3v2, then evaluated without
 further training in 5v4 and 6v4 to measure zero-shot transfer.
 
-The nearest defender approaches from the goal side to block the shooting
-angle, while the other defenders move into dangerous passing lanes. The
-attackers make separate decisions because each receives its own view of the
-players and ball.
+Three scripted defenses are available: the original direct-pressure rules,
+goal-side pressure, and pure passing-lane coverage. The attackers make separate
+decisions because each receives its own view of the players and ball.
 
 
 ## Run it
@@ -54,16 +53,20 @@ python pygame_visualizer.py --mode easy-pass
 python pygame_visualizer.py --mode pressured-pass
 ```
 
-Compare the two scripted defensive strategies visually:
+Compare the three scripted defensive strategies visually:
 
 ```bash
 python pygame_visualizer.py --defense goal-side
 python pygame_visualizer.py --defense passing-lanes
+python pygame_visualizer.py --defense original
 ```
 
 Goal-side defense sends the closest defender between the ball and goal while
 the others cover receivers. Passing-lane defense has every defender block a
-different receiver and deliberately leaves the ball carrier unpressured.
+different receiver and deliberately leaves the ball carrier unpressured. The
+original defense sends the closest player directly toward the ball while the
+others mark forward attackers. You can also cycle through all three with the
+in-window `DEFENSE` button or the `F` key.
 
 The easy drill places the defenders away from the passing lane. The pressured
 drill adds a slow pressing defender. A drill ends successfully when the agents
@@ -107,18 +110,18 @@ turnover rate, pass completion, and completed passes per episode. The 5v4 and
 6v4 tests load the 3v2 model without retraining it. Change the sample size with,
 for example, `--episodes 500`.
 
-Run a controlled comparison of both defenses on the same held-out layouts:
+Run a controlled comparison of all three defenses on the same held-out layouts:
 
 ```bash
 python swarm_3v2.py --report --defense all
 ```
 
-You can test only one strategy with `--defense goal-side` or
-`--defense passing-lanes`. In the current 200-episode comparison, goal-side
-versus passing-lane goal rates were 88.5% versus 98.5% in 3v2, 34.0% versus
-59.0% in 5v4, and 32.0% versus 57.0% in 6v4. Pure passing-lane defense is
-easier for this model because it gives the ball carrier time and space to
-advance directly.
+You can test only one strategy with `--defense goal-side`,
+`--defense passing-lanes`, or `--defense original`. The model trained against
+the original defense; its goal rates there are 97.0% in 3v2, 43.0% in 5v4,
+and 42.5% in 6v4. Goal-side defense lowers those rates to 88.5%, 34.0%, and
+32.0%. Pure passing-lane defense raises them to 98.5%, 59.0%, and 57.0%
+because it gives the ball carrier time and space to advance directly.
 
 For the complete off-ball and direct-play diagnostic evaluation, run:
 
@@ -140,7 +143,7 @@ For each strategy it measures goals, outcome types, pass attempts, completion
 rate, forward passes, pass-caused turnovers, goals after a pass, and receiver
 movement toward the ball.
 
-Current MAPPO checkpoint results:
+Current MAPPO checkpoint results against goal-side defense:
 
 | Strategy | Goals | Turnovers | Completed passes per episode |
 |---|---:|---:|---:|
