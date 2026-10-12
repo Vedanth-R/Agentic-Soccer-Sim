@@ -198,12 +198,33 @@ python swarm_3v2.py --train --steps 400000 --seeds 3
 
 Every 100,000 steps, training measures goals, passing, and off-ball value on
 held-out layouts. Each seed saves separate best-goals, best-teamwork, and
-best-overall checkpoints. A best-overall checkpoint must meet minimum scoring,
-passing, goal-after-pass, and off-ball requirements. The selected model is
-saved to `artifacts/goal_swarm_3v2.pt`.
+best-overall checkpoints prefixed with the requested model name, so experiments
+do not overwrite one another. A best-overall checkpoint must meet minimum
+scoring, passing, goal-after-pass, and off-ball requirements. The selected
+model is saved to `artifacts/goal_swarm_3v2.pt` for the documented run.
 
 Across the three reported seeds, average 3v2 scoring was 91.8% with a 3.7
 percentage-point standard deviation.
+
+### Goal-side retraining experiment
+
+A separate three-seed run trained against the harder goal-side defense and is
+saved at `artifacts/goal_side_swarm_3v2.pt`. It used the same curriculum and a
+400,000-step late phase:
+
+```bash
+python swarm_3v2.py --train --steps 400000 --seeds 3 \
+  --model artifacts/goal_side_swarm_3v2.pt
+```
+
+The three seeds averaged 91.8% goal-side scoring with a 0.6 percentage-point
+standard deviation. The selected seed scored 92.5% over 200 goal-side 3v2
+episodes, compared with 88.5% for the original checkpoint.
+
+The new model improved its trained 3v2 challenge but generally transferred
+worse to other defenses and larger rosters. This is evidence of specialization
+and motivates mixing defensive strategies during future training rather than
+using only the hardest one.
 
 ## Rewards
 

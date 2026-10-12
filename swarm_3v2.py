@@ -1007,8 +1007,9 @@ def print_generalization_report(
     learned = lambda env, observations: model_actions(
         model, observations, env.action_masks()
     )
-    scenarios = ((3, 2, "base roster"), (5, 4, "zero-shot"), (6, 4, "zero-shot"))
+    scenarios = ((3, 2), (5, 4), (6, 4))
     defense_styles = DEFENSE_STYLES if defense_style == "all" else (defense_style,)
+    training_defense = getattr(model, "training_defense", "original")
 
     print(f"Model evaluation: {episodes} held-out episodes per scenario")
     print(f"Seeds: {first_seed} through {first_seed + episodes - 1}")
@@ -1018,8 +1019,12 @@ def print_generalization_report(
         f"{'Turnovers':>10} {'Pass comp.':>11} {'Passes/ep':>10}"
     )
     print("-" * 83)
-    for attackers, defenders, test_type in scenarios:
+    for attackers, defenders in scenarios:
         for style in defense_styles:
+            if attackers == 3:
+                test_type = "trained" if style == training_defense else "new defense"
+            else:
+                test_type = "zero-shot"
             make_env = lambda a=attackers, d=defenders, s=style: SwarmSoccer(
                 a, d, defense_style=s
             )
@@ -1037,8 +1042,8 @@ def print_generalization_report(
             )
 
     print(
-        "\nThe model trained in 3v2 against the original defense. "
-        "The newer defenses and larger rosters are evaluated without retraining."
+        f"\nThe model trained in 3v2 against {training_defense} defense. "
+        "Other defenses and larger rosters are evaluated without retraining."
     )
 
 
@@ -1094,6 +1099,14 @@ def main():
         )
         completed_runs = []
         model_path = Path(args.model)
+
+        def seed_checkpoint(run_number, label):
+            """Keep checkpoints from separate named experiments isolated."""
+
+            suffix = model_path.suffix or ".pt"
+            return model_path.with_name(
+                f"{model_path.stem}_seed_{run_number}_{label}{suffix}"
+            )
 
         for run in range(args.seeds):
             run_seed = 100_000 * (run + 1)
@@ -1166,19 +1179,19 @@ def main():
                         best_goals = (full["goals"], label, state)
                         save_model(
                             model,
-                            model_path.with_name(f"seed_{run + 1}_best_goals.pt"),
+                            seed_checkpoint(run + 1, "best_goals"),
                         )
                     if teamwork_score > best_teamwork[0] and full["goals"] >= 0.40:
                         best_teamwork = (teamwork_score, label, state)
                         save_model(
                             model,
-                            model_path.with_name(f"seed_{run + 1}_best_teamwork.pt"),
+                            seed_checkpoint(run + 1, "best_teamwork"),
                         )
                     if eligible and overall_score > best_overall[0]:
                         best_overall = (overall_score, label, state)
                         save_model(
                             model,
-                            model_path.with_name(f"seed_{run + 1}_best_overall.pt"),
+                            seed_checkpoint(run + 1, "best_overall"),
                         )
                     print(
                         f"checkpoint {label}: goals={full['goals']:.1%} "

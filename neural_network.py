@@ -79,6 +79,7 @@ def save_model(model, filename="artifacts/swarm.pt"):
             "observation_size": int(model.body[0].in_features),
             "action_size": int(model.actor.out_features),
             "critic_observation_size": model.critic_observation_size,
+            "training_defense": getattr(model, "training_defense", "original"),
             "state_dict": model.state_dict(),
         },
         path,
@@ -96,6 +97,9 @@ def load_model(filename="artifacts/swarm.pt"):
     else:
         model = LegacySharedPolicy(checkpoint["observation_size"], checkpoint["action_size"])
     model.load_state_dict(checkpoint["state_dict"])
+    # Checkpoints created before defensive strategies were selectable used the
+    # original direct-pressure defender.
+    model.training_defense = checkpoint.get("training_defense", "original")
     return model.eval()
 
 
@@ -141,6 +145,7 @@ def train(
             env.action_count,
             env.critic_observation_size,
         )
+    model.training_defense = env.defense_style
     model.train()
     optimizer = getattr(model, "_ppo_optimizer", None)
     if optimizer is None:
