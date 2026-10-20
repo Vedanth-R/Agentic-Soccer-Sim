@@ -19,9 +19,10 @@ from swarm_3v2 import (
 WINDOW = (1100, 760)
 MARGIN = 55
 TOP = 120
-FIELD_COLOR = (48, 139, 79)
+FIELD_COLOR = (42, 128, 72)
+FIELD_STRIPE_COLOR = (38, 120, 67)
 LINE_COLOR = (240, 240, 230)
-TEAM_COLORS = ((54, 133, 255), (238, 73, 78))
+TEAM_COLORS = ((38, 116, 220), (224, 67, 72))
 DEFENSE_BUTTON = pygame.Rect(WINDOW[0] - 280, 18, 225, 34)
 
 
@@ -141,7 +142,11 @@ def draw(screen, env, font, paused, speed, seed, editing, selected_player, model
         if stripe % 2:
             x1 = screen_position(env, (stripe * env.width / 10, 0))[0]
             x2 = screen_position(env, ((stripe + 1) * env.width / 10, 0))[0]
-            pygame.draw.rect(screen, (44, 132, 74), (x1, field.top, x2 - x1, field.height))
+            pygame.draw.rect(
+                screen,
+                FIELD_STRIPE_COLOR,
+                (x1, field.top, x2 - x1, field.height),
+            )
 
     pygame.draw.rect(screen, LINE_COLOR, field, 3)
     center = screen_position(env, (env.width / 2, env.height / 2))
