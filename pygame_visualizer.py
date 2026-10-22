@@ -8,7 +8,6 @@ import pygame
 
 from neural_network import load_model
 from swarm_3v2 import (
-    DEFENSE_STYLES,
     MixedTrainingEnv,
     Swarm3v2,
     SwarmSoccer,
@@ -24,6 +23,7 @@ FIELD_STRIPE_COLOR = (38, 120, 67)
 LINE_COLOR = (240, 240, 230)
 TEAM_COLORS = ((38, 116, 220), (224, 67, 72))
 DEFENSE_BUTTON = pygame.Rect(WINDOW[0] - 280, 18, 225, 34)
+VIEWER_DEFENSE_STYLES = ("goal-side", "passing-lanes")
 
 
 def screen_position(env, position):
@@ -124,8 +124,10 @@ def choose_ball_owner(env, number):
 def toggle_defense(env):
     """Cycle through the deterministic defensive strategies."""
 
-    current = DEFENSE_STYLES.index(env.defense_style)
-    env.defense_style = DEFENSE_STYLES[(current + 1) % len(DEFENSE_STYLES)]
+    current = VIEWER_DEFENSE_STYLES.index(env.defense_style)
+    env.defense_style = VIEWER_DEFENSE_STYLES[
+        (current + 1) % len(VIEWER_DEFENSE_STYLES)
+    ]
 
 
 def draw(screen, env, font, paused, speed, seed, editing, selected_player, model_input_size):
@@ -213,7 +215,7 @@ def main():
     parser.add_argument("--defenders", type=int, default=2)
     parser.add_argument(
         "--defense",
-        choices=DEFENSE_STYLES,
+        choices=VIEWER_DEFENSE_STYLES,
         default="goal-side",
         help="scripted defensive strategy",
     )

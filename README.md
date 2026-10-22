@@ -53,20 +53,19 @@ python pygame_visualizer.py --mode easy-pass
 python pygame_visualizer.py --mode pressured-pass
 ```
 
-Compare the three scripted defensive strategies visually:
+Compare the two stronger scripted defensive strategies visually:
 
 ```bash
 python pygame_visualizer.py --defense goal-side
 python pygame_visualizer.py --defense passing-lanes
-python pygame_visualizer.py --defense original
 ```
 
 Goal-side defense sends the closest defender between the ball and goal while
 the others cover receivers. Passing-lane defense has every defender block a
-different receiver and deliberately leaves the ball carrier unpressured. The
-original defense sends the closest player directly toward the ball while the
-others mark forward attackers. You can also cycle through all three with the
-in-window `DEFENSE` button or the `F` key.
+different receiver and deliberately leaves the ball carrier unpressured. Cycle
+between these two options with the in-window `DEFENSE` button or the `F` key.
+The original defense remains available in terminal evaluations for historical
+comparison, but is not included in the visualizer.
 
 The easy drill places the defenders away from the passing lane. The pressured
 drill adds a slow pressing defender. A drill ends successfully when the agents
